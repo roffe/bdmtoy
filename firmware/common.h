@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#include "stm32f10x_gpio.h"
+#include "stm32f1xx.h"
 #include "SupportFuncs.h"
 #include "../shared/enums.h"
 #include "../shared/cmddesc.h"

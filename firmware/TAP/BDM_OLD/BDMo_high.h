@@ -2,9 +2,11 @@
 #define BDMOLD_H_
 
 void BDMOLD_setup         (const float TargetFreq);
+void BDMOLD_SetTiming     (const uint32_t settleNs, const uint32_t gapNs);
 void BDMOLD_InitPort      (const uint16_t *in, uint16_t *out);
 
 void BDMOLD_TargetReady   (const uint16_t *in, uint16_t *out);
+void BDMOLD_TargetStop    (const uint16_t *in, uint16_t *out);
 void BDMOLD_TargetReset   (const uint16_t *in, uint16_t *out);
 void BDMOLD_TargetStart   (const uint16_t *in, uint16_t *out);
 void BDMOLD_TargetStatus  (const uint16_t *in, uint16_t *out);

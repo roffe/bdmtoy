@@ -27,6 +27,8 @@ public:
     void StartEepromDump(int index);
     void StartDump(int index);
     void StartFlash(int index);
+    void StartProbe();
+    void StartUpdate(int index);
 
 signals:
     void finished();
@@ -40,6 +42,8 @@ private slots:
     void DumpEepromProcess();
     void DumpProcess();
     void FlashProcess();
+    void ProbeProcess();
+    void UpdateProcess();
     void WorkerDone();
 
 private:

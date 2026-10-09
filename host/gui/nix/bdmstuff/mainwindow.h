@@ -37,6 +37,7 @@ private slots:
     void btnFlashClick();
     void ECUIndexChange(int index);
     void btnDebugClick();
+    void btnUpdateClick();
 
 private:
     Ui::MainWindow *ui;

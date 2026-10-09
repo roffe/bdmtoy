@@ -79,6 +79,8 @@ typedef const struct
 
 // Core, setup/init/target info
 const char    *core_VersionString();                        // Return version string
+      uint32_t core_FirmwareVersion(uint16_t *version);     // Ask the adapter: RET_OK and major << 8 | minor, RET_NOTSUP before 1.0. The USB link must be up
+      uint32_t core_EnterBootloader(void);                  // Adapter resets into its USB DFU bootloader once it has answered (2.0+)
       void     core_InstallCallback (const void *funcptr);  // Worker must know where to jump to in case it wants something.
       void     core_InstallProgress (const void *funcptr);  // Of less concern. Forward progress to this pointer
       void     core_InstallMessage  (      void *funcptr);  // Of less concern.

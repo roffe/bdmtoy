@@ -143,6 +143,24 @@ char *core_TranslateFault()
             return "Target threw a generic fault (Blame NEXUS for this generic error message)";
         case RET_OVERFLOW:
             return "Internal bug: Code tried to overflow adapter!";
+
+        // Target faults, as firmware 1.0 reports them
+        case RET_NOTREADY:
+            return "Target did not enter debug mode (power, cable, BKPT/FREEZE?)";
+        case RET_NOSTART:
+            return "Target did not start";
+        case RET_DRIVERFAIL:
+            return "Flash driver reported a fault";
+        case RET_BUSTERMERR:
+            return "Bus error: nothing answered at that address";
+        case RET_ILLCOMMAND:
+            return "Target rejected a debug command";
+        case RET_MAXRETRY:
+            return "Target stopped responding (a bus cycle that never ended?)";
+        case RET_UNKERROR:
+            return "Unexpected debug-mode response";
+        case RET_RWERR:
+            return "Read/write error";
             
         default:
             // Whine whine whine... Not switching! Microbob's implementation doesn't work in *nix

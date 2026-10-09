@@ -4,6 +4,8 @@
 .global sBDMsendBits
 .global sBDMreceiveBits
 .global sBDMextraDelay
+.type sBDMsendBits, %function
+.type sBDMreceiveBits, %function
 
 .thumb
 
@@ -130,6 +132,7 @@ bx lr
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+.thumb_func
 sBDMsendBits:
 
     # Disable interrupts. Do this early due to the pipeline
@@ -222,6 +225,7 @@ bx r0
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+.thumb_func
 sBDMreceiveBits:
 
     # Disable interrupts. Do this early due to the pipeline

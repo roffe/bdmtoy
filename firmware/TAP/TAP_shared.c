@@ -2,9 +2,11 @@
 
 extern volatile uint32_t usbrec;
 
-extern uint16_t receiveBuffer[ADAPTER_BUFzIN/2];
+extern uint16_t receiveBuffer[];
 extern uint16_t sendBuffer[(ADAPTER_BUFzOUT/2)+2];
-extern void     usb_receiveData();
+extern uint32_t usb_poll();
+extern void     usb_rxRelease();
+extern void     usb_requestBootloader();
 
 #define HostFreq     48000000.0f
 
@@ -85,7 +87,10 @@ void TAP_InitPins()
 
     SetPinDir(P_TDI , 0); // Target data in  (Data from adapter)
     SetPinDir(P_TDO , 0); // Target data out (Data to adapter)
-    SetPinDir(P_CLK , 0); // Clock / breakpoint
+    // Clock / breakpoint: pulled up. A CPU32 (Trionic) samples BKPT as RESET
+    // rises, and the T7 has no pull-up of its own: left floating, an ECU
+    // powered up with the adapter idle on it came up halted in BDM.
+    SetPinDir(P_CLK , 3);
 
     SetPinDir(P_Trst, 0);
     // SetPinDir(P_rstcfg, 0);
@@ -121,11 +126,11 @@ uint16_t *TAP_RequestData(const uint32_t Address, const uint32_t Len)
     *sendPtr++ = Address;
     *sendPtr   = Len;
 
-    usbrec = 0;
+    usb_rxRelease();
     usb_sendData(&sendBuffer[0]);
 
     set_Timeout(2000);
-    while(!usbrec && !get_Timeout())   ;
+    while(!usb_poll() && !get_Timeout())   ;
     // disable_Timeout();
 
     // [total len, words], [1] [TAP_DO_ASSISTFLASH_IN] [data..]
@@ -151,7 +156,7 @@ void TAP_UpdateStatus(const uint16_t status, const uint16_t flag)
     sendBuffer[2] = status;
     sendBuffer[3] = flag;
 
-    usbrec = 0;
+    usb_rxRelease();
     usb_sendData(&sendBuffer[0]);
 }
 
@@ -166,7 +171,7 @@ inline static void TAP_ConfigureBDM_OLD()
     TAP_funcPntrs.DYN_TargetReady_pntr    = &BDMOLD_TargetReady;
     TAP_funcPntrs.DYN_TargetReset_pntr    = &BDMOLD_TargetReset;
     TAP_funcPntrs.DYN_TargetStart_pntr    = &BDMOLD_TargetStart;
-    TAP_funcPntrs.DYN_TargetStop_pntr     = &BDMOLD_TargetReady;
+    TAP_funcPntrs.DYN_TargetStop_pntr     = &BDMOLD_TargetStop;
 
     TAP_funcPntrs.DYN_TargetStatus_pntr   = &BDMOLD_TargetStatus;
 
@@ -339,8 +344,15 @@ inline static void TAP_WriteMemory(const uint16_t *in, uint16_t *out) {
     }
 }
 
-// [cmd len], [addr][addr], [len][len]
+// [cmd len], [addr][addr], [len][len], [data]++
 inline static void TAP_FillMemory(const uint16_t *in, uint16_t *out) {
+    const uint32_t Len = in[3] | (uint32_t) in[4] << 16;
+
+    // The data must be all there: no reading past the end of the frame
+    if (in[0] < 6 || !Len || (uint32_t)(in[0] - 6) != (Len + 1) / 2) {
+        out[0] = RET_MALFORMED;
+        return;
+    }
     DYN_Func *FillDynamic = (DYN_Func *) TAP_funcPntrs.DYN_FillMemory_pntr;
     FillDynamic(&in[1], out);
 }
@@ -359,10 +371,24 @@ inline static void TAP_ReadMemory(const uint16_t *in, uint16_t *out) {
     ReadDynamic(&in[1], out);
 }
 
+// A dump answers with its data frames, not a regular reply, so a dump that
+// cannot start must say so in a frame of its own: [3][TAP_DO_DUMPMEM][status].
+static void TAP_DumpRefused(uint16_t *out, const uint16_t status) {
+    out[0] = 3;
+    out[1] = TAP_DO_DUMPMEM;
+    out[2] = status;
+    usb_sendData(out);
+}
+
 // [cmd len], [addr][addr],[len][len]
 inline static void TAP_DumpMemory(const uint16_t *in, uint16_t *out) {
     if (in[0] != TAP_ReadCMD_sz) {
-        out[0] = RET_MALFORMED;
+        TAP_DumpRefused(out, RET_MALFORMED);
+        return;
+    }
+    if (TAP_funcPntrs.DYN_DumpMemory_pntr == (void *) &DUMMY_NotInstalled ||
+        TAP_funcPntrs.DYN_DumpMemory_pntr == (void *) &DUMMY_NotSupported) {
+        TAP_DumpRefused(out, RET_NOTSUP);
         return;
     }
     DYN_Func *DumpDynamic = (DYN_Func *) TAP_funcPntrs.DYN_DumpMemory_pntr;
@@ -444,6 +470,41 @@ inline static void TAP_ExecuteIns(const uint16_t *in, uint16_t *out) {
 /////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 // Adapter configuration; TAP
+
+// [cmd len]: reset into the bootloader (USB DFU, ffff:0108) once this reply
+// is out
+static void TAP_Bootloader(const uint16_t *in, uint16_t *out)
+{
+    if (in[0] != 2) {
+        out[0] = RET_MALFORMED;
+        return;
+    }
+    usb_requestBootloader();
+    out[0] = RET_OK;
+}
+
+// [cmd len][settle ns][gap ns]
+static void TAP_BDMTiming(const uint16_t *in, uint16_t *out)
+{
+    if (in[0] != 4) {
+        out[0] = RET_MALFORMED;
+        return;
+    }
+    BDMOLD_SetTiming(in[1], in[2]);
+    out[0] = RET_OK;
+}
+
+// [cmd len] -> [version]. Needs no interface, so a host can check it first.
+static void TAP_Version(const uint16_t *in, uint16_t *out)
+{
+    if (in[0] != 2) {
+        out[0] = RET_MALFORMED;
+        return;
+    }
+    out[0] = RET_OK;
+    out[1] = 3;
+    out[2] = ADAPTER_FW_VERSION;
+}
 
 // By default, the core will release the target after a generic dump but not all target has it implemented.
 // We'll just do nothing and say "ok" if it's one of those targets.
@@ -561,6 +622,8 @@ void TAP_Commands(const void *bufin)
     uint16_t *in_pntr  = (uint16_t *)  bufin;      // Incoming buffer
     uint16_t *out_pntr = (uint16_t *) &sendbfr[1]; // ..
 
+    const uint16_t *in_end = in_pntr + in_pntr[0]; // usb_receiveData() checked the frame length
+
     in_pntr++;
 
     uint16_t receiveNoCmds = *in_pntr++; // Fetch number of commands
@@ -572,7 +635,10 @@ moreCommands:
 
     out_pntr[2] = 2;
 
-    switch (*in_pntr)
+    // Each command must lie within the frame
+    if (in_pntr + 2 > in_end || in_pntr[1] < 2 || in_pntr + in_pntr[1] > in_end)
+        out_pntr[1] = RET_MALFORMED;
+    else switch (*in_pntr)
     {
         //////////////////////////
         /// Memory; Read commands
@@ -605,6 +671,15 @@ moreCommands:
         /// TAP; Configuration
         case TAP_DO_SETINTERFACE:
             TAP_SetInterface(&in_pntr[1], &out_pntr[1]);
+            break;
+        case TAP_DO_VERSION:
+            TAP_Version(&in_pntr[1], &out_pntr[1]);
+            break;
+        case TAP_DO_BDMTIMING:
+            TAP_BDMTiming(&in_pntr[1], &out_pntr[1]);
+            break;
+        case TAP_DO_BOOTLOADER:
+            TAP_Bootloader(&in_pntr[1], &out_pntr[1]);
             break;
 
         //////////////////////////

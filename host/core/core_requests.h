@@ -13,6 +13,8 @@ void *TAP_TargetReset();    // Reset target. No more, no less
 void *TAP_TargetStart();    // Do what is necessary to start the target
 void *TAP_TargetStop();     // Do what is necessary to stop the target. On some targets this is the same as ready, on others an interrupt is sent
 void *TAP_TargetRelease();
+void *TAP_GetVersion();     // Adapter firmware version (1.0+), major << 8 | minor
+void *TAP_EnterBootloader(); // Adapter resets into its USB DFU bootloader (2.0+)
 
 void *TAP_ReadByte   (uint32_t Addr);
 void *TAP_ReadWord   (uint32_t Addr);

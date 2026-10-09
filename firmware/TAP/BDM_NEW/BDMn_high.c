@@ -262,12 +262,12 @@ static inline void BDMNEW_ExecIns_wSentDataFast(const uint32_t instruction, cons
     DMA1_Channel5->CNDTR = 2;
 
     GPIOB->CRH          |= 0x80800000;
-    DMA1_Channel5->CCR  |= DMA_CCR1_EN;
+    DMA1_Channel5->CCR  |= DMA_CCR_EN;
 
     while(DMA1_Channel5->CNDTR)        ;
-    while(SPI2->SR & SPI_I2S_FLAG_BSY) ;
+    while(SPI2->SR & SPI_SR_BSY) ;
 
-    DMA1_Channel5->CCR &= ~DMA_CCR1_EN;
+    DMA1_Channel5->CCR &= ~DMA_CCR_EN;
     GPIOB->CRH         &= ~0x80800000;
 
     //////////////
@@ -280,12 +280,12 @@ static inline void BDMNEW_ExecIns_wSentDataFast(const uint32_t instruction, cons
     DMA1_Channel5->CNDTR = 2;
 
     GPIOB->CRH          |= 0x80800000;
-    DMA1_Channel5->CCR  |= DMA_CCR1_EN;
+    DMA1_Channel5->CCR  |= DMA_CCR_EN;
 
     while(DMA1_Channel5->CNDTR)        ;
-    while(SPI2->SR & SPI_I2S_FLAG_BSY) ;
+    while(SPI2->SR & SPI_SR_BSY) ;
 
-    DMA1_Channel5->CCR &= ~DMA_CCR1_EN;
+    DMA1_Channel5->CCR &= ~DMA_CCR_EN;
     GPIOB->CRH         &= ~0x80800000;
 }
 
@@ -354,12 +354,12 @@ static void BDMNEW_StopDownload()
     DMA1_Channel5->CNDTR = 2;
 
     GPIOB->CRH          |= 0x80800000;
-    DMA1_Channel5->CCR  |= DMA_CCR1_EN;
+    DMA1_Channel5->CCR  |= DMA_CCR_EN;
 
     while(DMA1_Channel5->CNDTR)        ;
-    while(SPI2->SR & SPI_I2S_FLAG_BSY) ;
+    while(SPI2->SR & SPI_SR_BSY) ;
 
-    DMA1_Channel5->CCR &= ~DMA_CCR1_EN;
+    DMA1_Channel5->CCR &= ~DMA_CCR_EN;
     GPIOB->CRH         &= ~0x80800000;
 }
 
@@ -456,8 +456,8 @@ static uint16_t BDMNEW_ReadSPR(const uint32_t Reg, void *out)
 // Address must be aligned and length must be in multiples of four. Speed has its drawbacks
 static uint16_t BDMNEW_FillMem(const uint32_t Address, const uint32_t Length, const void* in)
 {
-    SPI2->CR1 |= SPI_Direction_1Line_Tx;
-    SPI2->CR2 &= ~SPI_I2S_DMAReq_Rx;
+    SPI2->CR1 |= (SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE);
+    SPI2->CR2 &= ~SPI_CR2_RXDMAEN;
 
     BDMNEW_StartDownload(Address);
 
@@ -465,8 +465,8 @@ static uint16_t BDMNEW_FillMem(const uint32_t Address, const uint32_t Length, co
 
     BDMNEW_StopDownload();
 
-    SPI2->CR2 |= SPI_I2S_DMAReq_Rx;
-    SPI2->CR1 &= ~SPI_Direction_1Line_Tx;
+    SPI2->CR2 |= SPI_CR2_RXDMAEN;
+    SPI2->CR1 &= ~(SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE);
 
     return retval;
 }
@@ -585,11 +585,11 @@ static inline uint32_t BDMNEW_PrealoadDump()
     GPIOB->CRH |= 0x80800000;
 
     SPI2->DR = 0x8401;
-    while(!(SPI2->SR & SPI_I2S_FLAG_RXNE)) ;
+    while(!(SPI2->SR & SPI_SR_RXNE)) ;
     uint32_t tmp = SPI2->DR;
 
     SPI2->DR = 0x0004;
-    while(!(SPI2->SR & SPI_I2S_FLAG_RXNE)) ;
+    while(!(SPI2->SR & SPI_SR_RXNE)) ;
     tmp = SPI2->DR;
 
     // Stupid warning. That register must be read..

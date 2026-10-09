@@ -19,17 +19,22 @@ uint32_t dumpGenericLE(uint32_t Start, uint32_t Length)
     if (status != RET_OK)
         return status;
 
-    // Roll our thumbs
-    while (busyOK() == RET_OK)
-    {
+    // Roll our thumbs. Check for completion (all data received) BEFORE the
+    // fault/timeout, so a good dump isn't lost to a completion-time race.
+    do {
         if (wrk_dumpDone() != RET_BUSY)
         {
-            runDamnit(); // NTS; Don't do this! Just broke several targets without noticing...
-            return busyOK();
+            // All data is in. Release the target, but its result must not turn
+            // a fully-received dump into a failure: TAP_TargetRelease has
+            // historically faulted on some targets after a good dump.
+            runDamnit();
+            wrk_ResetFault();
+            return RET_OK;
         }
-    }
+        status = busyOK();
+    } while (status == RET_OK);
 
-    return RET_TIMEOUT;
+    return status;
 }
 
 uint32_t dumpGenericBE2(uint32_t Start, uint32_t Length)

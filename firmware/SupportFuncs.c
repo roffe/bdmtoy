@@ -1,43 +1,46 @@
 #include "common.h"
-#include "stm32f10x_usart.h"
-#include "stm32f10x_tim.h"
+#include "stm32f1xx_ll_tim.h"
+#include "stm32f1xx_ll_usart.h"
 
 static volatile uint32_t m_timeout;
 
 #define DEBUGUART  USART2
 
 void uart_putchar(char ch, FILE *f) {
-	while(USART_GetFlagStatus(DEBUGUART, USART_FLAG_TXE) == RESET)  ;
-	USART_SendData(DEBUGUART, ch);
+    while (!LL_USART_IsActiveFlag_TXE(DEBUGUART))  ;
+    LL_USART_TransmitData8(DEBUGUART, (uint8_t) ch);
 }
 
 char uart_getchar() {
-	while(!USART_GetFlagStatus(DEBUGUART, USART_FLAG_RXNE))  ;
-	return (DEBUGUART->DR)&0xFF;
+    while (!LL_USART_IsActiveFlag_RXNE(DEBUGUART))  ;
+    return (char) LL_USART_ReceiveData8(DEBUGUART);
 }
 
-int fputc(int ch, FILE *f) {
-	if (ch == '\n') { fputc('\r', f); }
-	while(USART_GetFlagStatus(DEBUGUART, USART_FLAG_TXE) == RESET)  ;
-	USART_SendData(DEBUGUART, ch);
-	return(ch);
+// newlib's stdout (printf under DEBUGPRINT) goes to the debug UART
+int _write(int fd, const char *ptr, int len) {
+    for (int i = 0; i < len; i++) {
+        if (ptr[i] == '\n')
+            uart_putchar('\r', 0);
+        uart_putchar(ptr[i], 0);
+    }
+    return len;
 }
 
+// dir: 0 input floating, 1 output push-pull, 2 input pull-down, 3 input
+// pull-up, 4 output open drain; outputs at 50 MHz. Written straight into
+// CRL/CRH: the turbo loops (BDMo_low.s) rewrite CRH the same way.
 void SetPinDir(const uint32_t port, const uint16_t pin, const uint8_t dir)
 {
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_InitStructure.GPIO_Pin = 1 << pin;
+    static const uint8_t cnfmode[] = { 0x4, 0x3, 0x8, 0x8, 0x7 };
+    GPIO_TypeDef *gpio = (GPIO_TypeDef *) (GPIOA_BASE + (port*0x400));
+    volatile uint32_t *cr = (pin < 8) ? &gpio->CRL : &gpio->CRH;
+    const uint32_t shift = (pin & 7) * 4;
 
-    // Default to in, floating
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    *cr = (*cr & ~(0xFu << shift)) | ((uint32_t) cnfmode[dir <= 4 ? dir : 0] << shift);
 
-    if      (dir == 1) GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
-    else if (dir == 2) GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;
-    else if (dir == 3) GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
-    else if (dir == 4) GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_OD;
-
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(((GPIO_TypeDef *) (GPIOA_BASE + (port*0x400))), &GPIO_InitStructure);
+    // Pull-down / pull-up are the output latch
+    if      (dir == 2) gpio->BRR  = 1u << pin;
+    else if (dir == 3) gpio->BSRR = 1u << pin;
 }
 
 void sleep(const uint16_t ms)
@@ -46,21 +49,24 @@ void sleep(const uint16_t ms)
     while (!m_timeout) ;
 }
 
+// TIM2 counts down from ms at 1 kHz (48 MHz / 48001) and interrupts at zero
 void set_Timeout(const uint16_t ms)
 {
-    TIM_Cmd(TIM2,DISABLE);
+    LL_TIM_DisableCounter(TIM2);
 
-    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
-    TIM_TimeBaseStructure.TIM_Period = ms-1;
-    TIM_TimeBaseStructure.TIM_Prescaler = 48000;
-    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Down;
-    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    LL_TIM_SetCounterMode(TIM2, LL_TIM_COUNTERMODE_DOWN);
+    LL_TIM_SetClockDivision(TIM2, LL_TIM_CLOCKDIVISION_DIV1);
+    LL_TIM_SetPrescaler(TIM2, 48000);
+    LL_TIM_SetAutoReload(TIM2, ms - 1);
+    LL_TIM_GenerateEvent_UPDATE(TIM2); // load prescaler and count now
 
-    TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+    // That UG must not count as the timeout: the update IRQ is set to fire on
+    // counter underflow only (init_Timeout), and anything pending is dropped
+    LL_TIM_ClearFlag_UPDATE(TIM2);
+    NVIC_ClearPendingIRQ(TIM2_IRQn);
 
     m_timeout = 0;
-    TIM_Cmd(TIM2,ENABLE);
+    LL_TIM_EnableCounter(TIM2);
 }
 
 uint32_t get_Timeout()
@@ -77,8 +83,8 @@ void disable_Timeout()
 
 void TIM2_IRQHandler(void)
 {
-    TIM_Cmd(TIM2,DISABLE);
-    TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+    LL_TIM_DisableCounter(TIM2);
+    LL_TIM_ClearFlag_UPDATE(TIM2);
     m_timeout = 1;
 }
 

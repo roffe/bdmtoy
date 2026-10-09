@@ -5,6 +5,19 @@
 #define ADAPTER_BUFzIN     2048
 #define ADAPTER_BUFzOUT    2048
 
+/// Firmware version, major << 8 | minor, answered to TAP_DO_VERSION.
+/// 1.0: version command, fixed old-BDM read/dump/fill handshake, address 0,
+/// always-resetting TARGETREADY, BKPT-only TARGETSTOP, USB flow control.
+/// 2.0: USB DFU bootloader (firmware updates over USB, TAP_DO_BOOTLOADER),
+/// TinyUSB, ST LL drivers and CMSIS 6 in place of StdPeriph and the legacy
+/// USB library. The app lives at 0x08004000.
+/// 2.1: DSCLK/BKPT pulled up while idle, from power-up on (a T7 powered up
+/// with the adapter on it came up halted).
+/// 2.2: vendor-specific USB interface (EP 0x03/0x81 as before) with Microsoft
+/// OS 2.0 descriptors in place of CDC-ACM: WinUSB loads on its own on Windows,
+/// and Linux binds no tty driver. Hosts claim interface 0 only.
+#define ADAPTER_FW_VERSION 0x0202
+
 #define GLOBALTIMEOUT         4
 
 /// Number of 16-bit words in the header of each command

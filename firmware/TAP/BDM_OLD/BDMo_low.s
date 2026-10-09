@@ -2,6 +2,9 @@
 .global BDMold_shift
 .global BDMold_turbodump
 .global BDMold_turbofill
+.type BDMold_shift, %function
+.type BDMold_turbodump, %function
+.type BDMold_turbofill, %function
 .thumb
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -98,6 +101,8 @@ bx lr
 #16: *pinRdPtr
 #20: *dwtptr
 #24: benchTime
+#28: delayStatus
+.thumb_func
 BDMold_shift:
 
     push  {r1 - r7, lr}  /* Usual stack stuff           */
@@ -110,11 +115,12 @@ BDMold_shift:
 
 /* * * * * * * * * * * * * * * * * * * * * * */
 
-    # Take care of attention bit
-    # Shift out 36(30)
+    # Take care of attention bit. DSCLK low starts the frame; the target needs
+    # a moment before DSO carries this frame's status: delayStatus, not the
+    # half bit time, which at 1 MHz was too short
     set_BOTH_low
     nop
-    ldr    r2, [r0, #4]
+    ldr    r2, [r0, #28]
     bl r1Delay
     read_TDO
     read_TDO
@@ -180,18 +186,90 @@ bx r1
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# This thing has delays timed for 4 MHz BDM (Min target speed ~8 MHz) but SPI can go significantly faster depending on what you set it to.
-# Protocol is 1 + 16 bits (status and actual data). Our delays takes care of the status bit while SPI does the heavy lifting.
+# Turbo dump and fill. SPI shifts the 16 data bits of a frame; the status bit
+# in front of them is clocked by hand: DSCLK low, wait delayStatus for DSO,
+# sample it, then hand the pins to SPI, whose idle-high clock is the rising
+# edge. Status is checked wherever a response is due; "not ready" (status 1,
+# data 0) repeats the frame up to `retries` times, anything else with status
+# 1 ends the loop.
+#
+# Return: 0 when done, else 0x10000 | data of the response that ended it
+# (0 still not ready, 1 bus error, 0xFFFF illegal command).
+//
 // 00: *spiSrPntr
 // 04: *spiDataPntr
 // 08: *pinCrhPtr
-
 // 12: *pinClrPtr
 // 16: *pinRdPtr
 // 20: *dwt_pntr
 // 24: dwt_time
 // 28: dataPtr;
 // 32: noDwords
+// 36: delayStatus
+// 40: dumpMore  (dump: the last long word sends DUMP, not NOP; more follow)
+// 44: retries
+// 48: *pinSetPtr (GPIOB BSRR)
+// 52: frameGap
+
+# r6 = CRH with DSCLK (pin 13) and DSI (pin 15) on SPI. Leaves r2 = 0x80.
+.macro crh_SPI
+    mov    r6, #0x80
+    lsl    r6, #8
+    mov    r2, #0x80
+    orr    r6,  r2
+    lsl    r6, #16
+    orr    r6,  r5
+.endm
+
+# Start a frame whose response is checked: DSCLK low, wait for DSO, status
+# bit into r1, pins to SPI.
+.macro status_frame
+    set_BOTH_low
+    crh_SPI
+    ldr    r2, [r0, #36]
+    bl     r1Delay
+    read_TDO
+    str    r6, [r4, #0]
+    mov    r1,  r2
+.endm
+
+# Start a frame whose response is not looked at.
+.macro plain_frame
+    set_BOTH_low
+    crh_SPI
+    str    r6, [r4, #0]
+.endm
+
+# r3 out on SPI; wait for the reply into r6, pins back to GPIO. Leaves r3 = 1.
+# DSCLK is set high in the output latch first: back on GPIO it then idles
+# high. (It used to come back low, which started the next frame right as the
+# target was taking in the last one: the race behind the bad dumps.)
+.macro spi_word
+    ldr    r2, [r0, #4]
+    strh   r3, [r2, #0]
+    mov    r3, #1
+1:
+    ldr    r6, [r0, #0]
+    ldrh   r6, [r6, #0]
+    ror    r6, r3
+    bpl    1b
+    ldr    r2, [r0, #48]  /* pinSetPtr (BSRR) */
+    mov    r3, #0x20      /* DSCLK high: byte lanes replicate, as in set_CLK_high */
+    strb   r3, [r2, #0]
+    mov    r3, #1
+    ldr    r2, [r0, #4]
+    ldrh   r6, [r2, #0]
+    str    r5, [r4, #0]
+.endm
+
+# Pause frameGap between a frame that hands the target a command and the next
+# frame, so the target has taken it in before DSCLK falls again.
+.macro frame_gap
+    ldr    r2, [r0, #52]
+    bl     r1Delay
+.endm
+
+.thumb_func
 BDMold_turbodump:
 
     push  {r4 - r7, lr}  /* Usual stack stuff           */
@@ -200,125 +278,67 @@ BDMold_turbodump:
     ldr    r5, [r4, #0 ] /* Stock */
     ldr    r7, [r0, #28] /* Pointer */
 
-/* * * * * * * * * * * * * * * * * * * * * * */
-
-AttentionHigh:
-
-    # We could store this but we need a delay of 30 cycles anyway..
-    set_BOTH_low
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
-
-    nop
-    nop
-
-    read_TDO
-    str    r6, [r4, #0]
-    mov    r1,  r2
-
-    ldr    r2, [r0, #4]
-    mov    r3,  #0
-    strh   r3, [r2, #0]
-
-    mov    r3, #1
-BusyHigh:
-    ldr    r6, [r0, #0]
-    ldrh   r6, [r6, #0]
-    ror    r6, r3
-    bpl BusyHigh
-
-    # Fetch high word
-    ldrh   r6, [r2, #0]
-    str    r5, [r4, #0]
-
+DumpHigh:
+    # High word: a NOP, answered with the result of the DUMP sent before
+    status_frame
+    mov    r3, #0
+    spi_word
     ror    r1, r3
-    bmi AttentionHigh
-
-    # Store data
+    bmi    DumpStatus
     strh   r6, [r7, #2]
 
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-
+    # Low word: send the next DUMP with it, or a NOP after the very last long
+    # word so no read is left running
     set_BOTH_low
-
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
-
-    # Dump32: 0x1D80
+    crh_SPI
     mov    r3, #0x1D
     lsl    r3, #8
-    orr    r3,  r2
-
-    # Enable SPI
+    orr    r3,  r2       /* DUMP32 0x1D80 */
+    ldr    r2, [r0, #32]
+    cmp    r2, #1
+    bne    DumpSend
+    ldr    r2, [r0, #40]
+    cmp    r2, #0
+    bne    DumpSend
+    mov    r3, #0
+DumpSend:
     str    r6, [r4, #0]
-
-    # Store next command..
-    ldr    r2, [r0, #4]
-    strh   r3, [r2, #0]
-
-    mov    r3, #1
-BusyLow:
-    ldr    r6, [r0, #0]
-    ldrh   r6, [r6, #0]
-    ror    r6, r3
-    bpl BusyLow
-
-    ldrh   r6, [r2, #0]
-    str    r5, [r4, #0]
-
-# http://www.bitsavers.org/components/motorola/68000/CPU32_Reference_Manual_Aug90.pdf
-    # There's no need to read the second status #
-
-/* * * * * * * * * * * * * * * * * * * * * * */
-
-    # Store data
+    spi_word
     strh   r6, [r7, #0]
-    # Increment pointer
     add    r7, #4
 
-    # We need a slight delay for it to register the command..
-    # 5: Stable down to 14.680
-    mov    r2, #5
-    bl r1Delay
+    # Let it register the DUMP before the next frame starts
+    frame_gap
 
     ldr    r2, [r0, #32]
     sub    r2, #1
     str    r2, [r0, #32]
-    bne AttentionHigh
+    bne    DumpHigh
 
-    # Store pointer..
-    # str    r7, [r0, #28]
+    mov    r0, #0
+    b      DumpDone
 
-    # Stack stuff..
+DumpStatus:
+    cmp    r6, #0
+    bne    DumpFault
+    ldr    r2, [r0, #44]
+    sub    r2, #1
+    str    r2, [r0, #44]
+    beq    DumpFault
+    b      DumpHigh
+DumpFault:
+    mov    r0, #1
+    lsl    r0, #16
+    orr    r0,  r6
+DumpDone:
     pop   {r4 - r7}
     pop   {r1}
+    bx r1
 
-bx r1
-
-
-
-
-
-
-
-
-
-# Sequence:
-# 1. Send command
-# 2. Send data high
-# 3. Send data low
-
-# 4. send
-
+# Fill: FILL, data high, data low per long word. The FILL frame is answered
+# with the result of the write before it; a final NOP collects the last one.
+# "Not ready" on a FILL means the CPU did not take it, so it is sent again.
+.thumb_func
 BDMold_turbofill:
 
     push  {r4 - r7, lr}  /* Usual stack stuff           */
@@ -327,235 +347,67 @@ BDMold_turbofill:
     ldr    r5, [r4, #0 ] /* Stock */
     ldr    r7, [r0, #28] /* Pointer */
 
-    b inFill
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# Command
-/*
-    set_BOTH_low
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
-
-    # Fill32
-    # 0x1C80
-    mov    r1, #0x1C
-    lsl    r1, #8
-    orr    r1,  r2
-
-    # nop
-    # nop
-
-    # Enable SPI
-    str    r6, [r4, #0]
-
-    # Fetch pointer to data register and store command
-    ldr    r2, [r0, #4]
-    strh   r1, [r2, #0]
-
-    mov    r3, #1
-BusyCommandFill:
-    ldr    r6, [r0, #0]
-    ldrh   r6, [r6, #0]
-    ror    r6, r3
-    bpl BusyCommandFill
-
-    ldrh   r2, [r2, #0]
-    str    r5, [r4, #0]
-*/
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# High word
-FillMore:
-
-    # Slight delay. Let it register what just happened
-    # mov    r2, #1
-    # bl r1Delay
-
-    # We could store this but we need a delay of 30 cycles anyway..
-    set_BOTH_low
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
-
-    # nop
-    # nop
-
-    str    r6, [r4, #0]
-
-    ldr    r2, [r0, #4]
-    ldrh   r3, [r7, #2]
-    strh   r3, [r2, #0]
-
-    mov    r3, #1
-    ldr    r1, [r0, #0]
-BusyHighFill:
-    ldrh   r6, [r1, #0]
-    ror    r6, r3
-    bpl BusyHighFill
-
-    # Fetch only to make SPI happy
-    ldrh   r6, [r2, #0]
-    str    r5, [r4, #0]
-
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# Low word
-
-    set_BOTH_low
-
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
-
-    # Enable SPI
-    str    r6, [r4, #0]
-
-    # Store data..
-    ldr    r2, [r0, #4]
-    ldrh   r3, [r7, #0]
-    strh   r3, [r2, #0]
-
-    mov    r3, #1
-    ldr    r1, [r0, #0]
-BusyLowFill:
-    ldrh   r6, [r1, #0]
-    ror    r6, r3
-    bpl BusyLowFill
-
-    # Fetch only to make SPI happy
-    ldrh   r6, [r2, #0]
-    str    r5, [r4, #0]
-
-    # 2
-    # mov    r2, #2
-    # bl r1Delay
-
-    # Increment data pointer
-    add    r7, #4
-
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-
-    # Fetch number of words left, If we have more, embedd fill to speed up the process
-    ldr    r2, [r0, #32]
-    sub    r2, #1
-    str    r2, [r0, #32]
-    beq lastFill
-
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# In busyfill
-inFill:
-
-    # We could store this but we need a delay of 30 cycles anyway..
-    set_BOTH_low
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
-
-    nop
-    nop
-
-    read_TDO
-    str    r6, [r4, #0]
-    mov    r1,  r2
-
-    # Fill32
-    # 0x1C80
+FillCmd:
+    status_frame
     mov    r3, #0x1C
     lsl    r3, #8
     mov    r2, #0x80
-    orr    r3,  r2
-    ldr    r2, [r0, #4]
-    strh   r3, [r2, #0]
-
-    mov    r3, #1
-BusyInFill:
-    ldr    r6, [r0, #0]
-    ldrh   r6, [r6, #0]
-    ror    r6, r3
-    bpl BusyInFill
-
-    # Fetch high word
-    ldrh   r6, [r2, #0]
-    str    r5, [r4, #0]
-
+    orr    r3,  r2       /* FILL32 0x1C80 */
+    spi_word
     ror    r1, r3
-    bmi inFill
+    bmi    FillCmdStatus
 
-    b FillMore
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# last busyfill
-lastFill:
+    plain_frame
+    ldrh   r3, [r7, #2]
+    spi_word
 
-    # We could store this but we need a delay of 30 cycles anyway..
-    set_BOTH_low
-    mov    r6, #0x80
-    lsl    r6, #8
-    mov    r2, #0x80
-    orr    r6,  r2
-    lsl    r6, #16
-    orr    r6,  r5
+    plain_frame
+    ldrh   r3, [r7, #0]
+    spi_word
+    add    r7, #4
 
-    nop
-    nop
+    # The write starts now; let it register before the next frame
+    frame_gap
 
-    read_TDO
-    str    r6, [r4, #0]
-    mov    r1,  r2
+    ldr    r2, [r0, #32]
+    sub    r2, #1
+    str    r2, [r0, #32]
+    bne    FillCmd
 
+FillLast:
+    status_frame
     mov    r3, #0
-    ldr    r2, [r0, #4]
-    strh   r3, [r2, #0]
-
-    mov    r3, #1
-BusyLastFill:
-    ldr    r6, [r0, #0]
-    ldrh   r6, [r6, #0]
-    ror    r6, r3
-    bpl BusyLastFill
-
-    # Fetch high word
-    ldrh   r6, [r2, #0]
-    str    r5, [r4, #0]
-
+    spi_word
     ror    r1, r3
-    bmi lastFill
+    bmi    FillLastStatus
 
+    mov    r0, #0
+    b      FillDone
 
-    # Store data
-    # strh   r6, [r7, #0]
-    # Increment pointer
-
-
-    # We need a slight delay for it to register the command..
-    # 5: Stable down to 14.680
-
-
-
-
-    # Store pointer..
-    # str    r7, [r0, #28]
-
-    # Stack stuff..
+FillCmdStatus:
+    cmp    r6, #0
+    bne    FillFault
+    ldr    r2, [r0, #44]
+    sub    r2, #1
+    str    r2, [r0, #44]
+    beq    FillFault
+    b      FillCmd
+FillLastStatus:
+    cmp    r6, #0
+    bne    FillFault
+    ldr    r2, [r0, #44]
+    sub    r2, #1
+    str    r2, [r0, #44]
+    beq    FillFault
+    b      FillLast
+FillFault:
+    mov    r0, #1
+    lsl    r0, #16
+    orr    r0,  r6
+FillDone:
     pop   {r4 - r7}
     pop   {r1}
-
-bx r1
+    bx r1
 
 
 

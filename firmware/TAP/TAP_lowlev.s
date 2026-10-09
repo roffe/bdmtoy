@@ -1,5 +1,8 @@
 .thumb
 .global TAP_PreciseDelay
+.type TAP_PreciseDelay, %function
+
+.thumb_func
 
 # Takes:
 # 22~ cycles only to jump to this function, do the check and then leave

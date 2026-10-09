@@ -88,6 +88,24 @@ uint32_t TAP_TargetStatus()
     return ptr[2] & 0xFFFF;
 }
 
+// [cmd][cmd + data len, words] -> [version]
+void *TAP_GetVersion()
+{
+    static uint16_t arr[2];
+    arr[0] = TAP_DO_VERSION;
+    arr[1] = 2;
+    return &arr[0];
+}
+
+// [cmd][cmd + data len, words]
+void *TAP_EnterBootloader()
+{
+    static uint16_t arr[2];
+    arr[0] = TAP_DO_BOOTLOADER;
+    arr[1] = 2;
+    return &arr[0];
+}
+
 void *TAP_TargetRelease()
 {
     static uint16_t arr[2];

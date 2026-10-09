@@ -67,13 +67,16 @@ enum Master_Commands
   
     // Configuration
     TAP_DO_SETINTERFACE   = 0x0001,
+    TAP_DO_VERSION        = 0x0002, // Firmware version, ADAPTER_FW_VERSION. Works before SETINTERFACE. Older firmware answers RET_NOTSUP
+    TAP_DO_BDMTIMING      = 0x0003, // Old BDM frame timing: [status settle, ns][gap after a command frame, ns]. SETINTERFACE resets it
+    TAP_DO_BOOTLOADER     = 0x0004, // 2.0+: answer, then reset into the USB DFU bootloader (ffff:0108)
   
     TAP_DO_PORTRESET      = 0x0010,
     TAP_DO_TARGETINITPORT = 0x0011,
-    TAP_DO_TARGETREADY    = 0x0012,
-    TAP_DO_TARGETRESET    = 0x0013,
+    TAP_DO_TARGETREADY    = 0x0012, // Reset into debug mode. Old BDM: always resets, BKPT held across it
+    TAP_DO_TARGETRESET    = 0x0013, // Reset and run
     TAP_DO_TARGETSTART    = 0x0014,
-    TAP_DO_TARGETSTOP     = 0x0015,
+    TAP_DO_TARGETSTOP     = 0x0015, // Halt without a reset. Old BDM: BKPT; RET_NOTREADY if the target does not halt
     TAP_DO_TARGETSTATUS   = 0x0016,
 
     // Memory

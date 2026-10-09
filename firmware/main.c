@@ -1,257 +1,265 @@
 #include "TAP/TAP_shared.h"
+#include "board.h"
+#include "tusb.h"
+#include "device/usbd_pvt.h"
 
-#include "stm32f10x.h"
-#include "stm32f10x_rcc.h"
-#include "stm32f10x_usart.h"
-#include "stm32f10x_tim.h"
-#include "stm32f10x_spi.h"
+#include "stm32f1xx_ll_bus.h"
+#include "stm32f1xx_ll_dma.h"
+#include "stm32f1xx_ll_gpio.h"
+#include "stm32f1xx_ll_rcc.h"
+#include "stm32f1xx_ll_spi.h"
+#include "stm32f1xx_ll_tim.h"
+#include "stm32f1xx_ll_usart.h"
 
-#include "hw_config.h"
-#include "usb_lib.h"
-#include "usb_desc.h"
-#include "usb_pwr.h"
+#define EP_DATA_IN 0x81
 
 volatile uint32_t usbrec = 0;
-uint16_t receiveBuffer[ADAPTER_BUFzIN/2];
+// One spare packet, as the frame parser below always reads into it whole
+uint16_t receiveBuffer[(ADAPTER_BUFzIN + 64)/2];
 uint16_t sendBuffer[(ADAPTER_BUFzOUT/2)+2];
 
-void EP1_IN_Callback() {}
-void SOF_Callback() {}
+static volatile uint32_t rebootRequest;
 
+/////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+// USB link (TinyUSB vendor class)
+
+void USB_HP_CAN1_TX_IRQHandler(void)  { tud_int_handler(0); }
+void USB_LP_CAN1_RX0_IRQHandler(void) { tud_int_handler(0); }
+void USBWakeUp_IRQHandler(void)       { tud_int_handler(0); }
+
+// The reply frame before has fully left, its zero-length packet included.
+static void usb_txWait()
+{
+    while (tud_mounted() &&
+           (tud_vendor_write_available() != CFG_TUD_VENDOR_TX_BUFSIZE || usbd_edpt_busy(0, EP_DATA_IN)))
+        tud_task();
+}
+
+// Send one frame, [total length, words].., on EP 0x81. The hosts read frames
+// from the start of a USB packet, so it waits for the frame before to be
+// gone and goes out as one transfer, which TinyUSB ends with a zero-length
+// packet when it fills its last packet. It returns once the frame is queued:
+// the interrupt handler sends it while the caller prepares the next.
 uint16_t usb_sendData(const void *buffer)
 {
-    uint16_t *packet = (uint16_t *) buffer;
-    uint32_t  length = packet[0] * 2;
+    const uint8_t *packet = (const uint8_t *) buffer;
+    uint32_t       length = ((const uint16_t *) buffer)[0] * 2;
 
-    // There's a bug somewhere in there...
-    uint8_t  PacketSize = (USB_DATA_SIZE == length) ? (USB_DATA_SIZE - 2) : USB_DATA_SIZE;
-
-    while (length)
+    usb_txWait();
+    while (length && tud_mounted())
     {
-        if (length <= PacketSize)
-            PacketSize = length;
-
-        length -= PacketSize;
-
-        while (GetEPTxStatus(ENDP1) == EP_TX_VALID)   ;
-
-        UserToPMABufferCopy((uint8_t *)packet, ENDP1_TXADDR, PacketSize);
-        SetEPTxCount(ENDP1, PacketSize);
-        SetEPTxValid(ENDP1);
-
-        packet += PacketSize/2;
+        const uint32_t n = tud_vendor_write(packet, length);
+        packet += n;
+        length -= n;
+        tud_vendor_write_flush();
+        if (length)
+            tud_task();
     }
 
     return RET_OK;
 }
 
-// TODO: Check timing and reset expectmorebytes / pointer if a certain amount of time has passed
-void usb_receiveData()
+// Frame reception: the first two bytes give the length in words; the rest is
+// read from the receive FIFO as it comes. A frame is handed over through usbrec.
+static uint32_t rxGot; // bytes of the frame so far
+static uint32_t rxLen; // its length, bytes
+
+static void usb_rxReset()
 {
-    static uint8_t *bufferptr = (uint8_t *)&receiveBuffer[0];
-    static uint32_t expectmorebytes = 0;
-    static uint32_t completeLen = 0;
-
-    if (usbrec > 0)
-    {
-        // printf("usb_receiveData(): Locked\n\r");
-        // Adapter is busy.
-        // Implement Mutex locking of USB output and answer host
-        // With exception of "DO_ABANDON"; kill everything.
-        // uint8_t tmp[USB_DATA_SIZE];
-        // uint32_t rd = USB_SIL_Read(EP3_OUT, tmp);
-    }
-    else
-    {
-        uint32_t recd = USB_SIL_Read(EP3_OUT, bufferptr);
-
-        // Start of packet frame
-        if (expectmorebytes == 0)
-        {
-            completeLen = (*(uint16_t *) &bufferptr[0]) * 2;
-
-            // Header is either malformed or we'll soon receive more data...
-            if (completeLen > USB_DATA_SIZE)
-                expectmorebytes = completeLen - USB_DATA_SIZE;
-        }
-
-        // In the middle of receiving a frame
-        else
-        {
-            if (expectmorebytes >= recd)
-                expectmorebytes -= recd;
-            else
-                expectmorebytes  = 0;
-        }
-
-        bufferptr += recd;
-
-        if (expectmorebytes == 0)
-        {
-            bufferptr = (uint8_t *)&receiveBuffer[0];
-            usbrec = completeLen;
-        }
-
-        SetEPRxValid(ENDP3);
-    }
+    rxGot = rxLen = 0;
 }
+
+// TinyUSB empties its FIFOs on a bus reset; start on a frame boundary with them
+void tud_mount_cb(void)  { usb_rxReset(); }
+void tud_umount_cb(void) { usb_rxReset(); }
+
+// Run USB and assemble a frame. Returns usbrec: the length of a complete frame
+// in receiveBuffer, 0 while there is none.
+uint32_t usb_poll()
+{
+    tud_task();
+
+    if (usbrec || !tud_vendor_available())
+        return usbrec;
+
+    uint8_t *rx = (uint8_t *) receiveBuffer;
+
+    if (rxGot < 2)
+        rxGot += tud_vendor_read(&rx[rxGot], 2 - rxGot);
+    if (rxGot < 2)
+        return 0;
+
+    if (!rxLen)
+    {
+        rxLen = receiveBuffer[0] * 2;
+        // Not a frame (garbage, or a confused host): drop
+        // what is there and wait for the host to start over.
+        if (rxLen < 8 || rxLen > ADAPTER_BUFzIN)
+        {
+            tud_vendor_read_flush();
+            usb_rxReset();
+            return 0;
+        }
+    }
+
+    rxGot += tud_vendor_read(&rx[rxGot], rxLen - rxGot);
+    if (rxGot < rxLen)
+        return 0;
+
+    usbrec = rxLen;
+    usb_rxReset();
+    return usbrec;
+}
+
+// Done with the frame in receiveBuffer
+void usb_rxRelease()
+{
+    usbrec = 0;
+}
+
+// TAP_DO_BOOTLOADER: reset into the bootloader once the reply has gone out
+void usb_requestBootloader()
+{
+    rebootRequest = 1;
+}
+
+/////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+// SPI2 (BDM, BDM new) and its DMA channels
 
 static void SPI_PreinitDMA()
 {
-    DMA_InitTypeDef DMA_InitStructure;
+    LL_SPI_DisableDMAReq_RX(SPI2);
+    LL_SPI_DisableDMAReq_TX(SPI2);
 
-    SPI_I2S_DMACmd(SPI2, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, DISABLE);
+    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
 
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
-
-    DMA_DeInit(DMA1_Channel4);
-    DMA_DeInit(DMA1_Channel5);
+    LL_DMA_InitTypeDef dma;
+    LL_DMA_StructInit(&dma);
+    dma.PeriphOrM2MSrcAddress  = (uint32_t)&SPI2->DR;
+    dma.NbData                 = 0;
+    dma.PeriphOrM2MSrcIncMode  = LL_DMA_PERIPH_NOINCREMENT;
+    dma.MemoryOrM2MDstIncMode  = LL_DMA_MEMORY_INCREMENT;
+    dma.PeriphOrM2MSrcDataSize = LL_DMA_PDATAALIGN_HALFWORD;
+    dma.MemoryOrM2MDstDataSize = LL_DMA_MDATAALIGN_HALFWORD;
+    dma.Mode                   = LL_DMA_MODE_NORMAL;
 
     // Rx
-    DMA_StructInit(&DMA_InitStructure);
-    DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&SPI2->DR;
-    DMA_InitStructure.DMA_DIR                = DMA_DIR_PeripheralSRC;
-    DMA_InitStructure.DMA_BufferSize         = 0;
-    DMA_InitStructure.DMA_PeripheralInc      = DMA_PeripheralInc_Disable;
-    DMA_InitStructure.DMA_MemoryInc          = DMA_MemoryInc_Enable;
-    DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
-    DMA_InitStructure.DMA_MemoryDataSize     = DMA_MemoryDataSize_HalfWord;
-    DMA_InitStructure.DMA_Mode               = DMA_Mode_Normal;
-    DMA_InitStructure.DMA_Priority           = DMA_Priority_High;
-    DMA_InitStructure.DMA_M2M                = DMA_M2M_Disable;
-    DMA_Init(DMA1_Channel4, &DMA_InitStructure);
+    dma.Direction              = LL_DMA_DIRECTION_PERIPH_TO_MEMORY;
+    dma.Priority               = LL_DMA_PRIORITY_HIGH;
+    LL_DMA_DeInit(DMA1, LL_DMA_CHANNEL_4);
+    LL_DMA_Init(DMA1, LL_DMA_CHANNEL_4, &dma);
 
-    // TX
-    DMA_InitStructure.DMA_MemoryDataSize     = DMA_MemoryDataSize_HalfWord;
-    DMA_InitStructure.DMA_Priority           = DMA_Priority_VeryHigh;
-    DMA_InitStructure.DMA_DIR                = DMA_DIR_PeripheralDST;
-    DMA_Init(DMA1_Channel5, &DMA_InitStructure);
+    // Tx
+    dma.Direction              = LL_DMA_DIRECTION_MEMORY_TO_PERIPH;
+    dma.Priority               = LL_DMA_PRIORITY_VERYHIGH;
+    LL_DMA_DeInit(DMA1, LL_DMA_CHANNEL_5);
+    LL_DMA_Init(DMA1, LL_DMA_CHANNEL_5, &dma);
 
-    DMA1_Channel4->CCR &= ~DMA_CCR1_EN;
-    DMA1_Channel5->CCR &= ~DMA_CCR1_EN;
+    LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_4);
+    LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_5);
+    LL_DMA_ClearFlag_TC4(DMA1);
+    LL_DMA_ClearFlag_TC5(DMA1);
 
-    // printf("DMA1_Channel4->CCR: %08X\n\r", DMA1_Channel4->CCR);
-    // printf("DMA1_Channel5->CCR: %08X\n\r", DMA1_Channel5->CCR);
-
-    DMA1->ISR &= ~(DMA1_FLAG_TC4 | DMA1_FLAG_TC5);
-
-    SPI_I2S_DMACmd(SPI2, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, ENABLE);
+    LL_SPI_EnableDMAReq_RX(SPI2);
+    LL_SPI_EnableDMAReq_TX(SPI2);
 }
 
-#ifdef DEBUGPRINT
-static const char *spiSpd[] = {
-"SPI_BaudRatePrescaler_2",
-"SPI_BaudRatePrescaler_4",
-"SPI_BaudRatePrescaler_8",
-"SPI_BaudRatePrescaler_16",
-"SPI_BaudRatePrescaler_32",
-"SPI_BaudRatePrescaler_64",
-"SPI_BaudRatePrescaler_128",
-"SPI_BaudRatePrescaler_256"
-};
-#endif
-
-
-// SPI2 is apb1 (which is ran at 24 MHz (sysfreq / 2))
+// SPI2 is on APB1, 24 MHz: the clock is the fastest prescaler at or below
+// the frequency asked for.
 void InitSPI(const spi_cfg_t *cfg)
 {
-    SPI_I2S_DeInit(SPI2);
-    SPI_InitTypeDef SPI_InitStructure;
+    static const uint32_t prescalers[] = {
+        LL_SPI_BAUDRATEPRESCALER_DIV2,  LL_SPI_BAUDRATEPRESCALER_DIV4,
+        LL_SPI_BAUDRATEPRESCALER_DIV8,  LL_SPI_BAUDRATEPRESCALER_DIV16,
+        LL_SPI_BAUDRATEPRESCALER_DIV32, LL_SPI_BAUDRATEPRESCALER_DIV64,
+        LL_SPI_BAUDRATEPRESCALER_DIV128, LL_SPI_BAUDRATEPRESCALER_DIV256,
+    };
+    uint32_t div = 0;
+    while (div < 7 && cfg->frequency < (24000000u >> (div + 1)))
+        div++;
 
-    SPI_InitStructure.SPI_Direction     = SPI_Direction_2Lines_FullDuplex;
-    SPI_InitStructure.SPI_Mode          = SPI_Mode_Master;
-    SPI_InitStructure.SPI_NSS           = SPI_NSS_Soft;
-    SPI_InitStructure.SPI_CRCPolynomial = 0;
+    LL_APB1_GRP1_ForceReset(LL_APB1_GRP1_PERIPH_SPI2);
+    LL_APB1_GRP1_ReleaseReset(LL_APB1_GRP1_PERIPH_SPI2);
 
-    SPI_InitStructure.SPI_FirstBit      = cfg->order    ? SPI_FirstBit_MSB : SPI_FirstBit_LSB;
-    SPI_InitStructure.SPI_DataSize      = cfg->size     ? SPI_DataSize_16b : SPI_DataSize_8b;
-    SPI_InitStructure.SPI_CPOL          = cfg->polarity ? SPI_CPOL_High    : SPI_CPOL_Low;
-    SPI_InitStructure.SPI_CPHA          = cfg->phase    ? SPI_CPHA_2Edge   : SPI_CPHA_1Edge;
-
-    if (cfg->frequency >= (24000000 / 2))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_2;
-    else if (cfg->frequency >= (24000000 / 4))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_4;
-    else if (cfg->frequency >= (24000000 / 8))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_8;
-    else if (cfg->frequency >= (24000000 / 16))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_16;
-    else if (cfg->frequency >= (24000000 / 32))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_32;
-    else if (cfg->frequency >= (24000000 / 64))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_64;
-    else if (cfg->frequency >= (24000000 / 128))
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_128;
-    else
-        SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_256;
+    LL_SPI_InitTypeDef spi;
+    LL_SPI_StructInit(&spi);
+    spi.TransferDirection = LL_SPI_FULL_DUPLEX;
+    spi.Mode              = LL_SPI_MODE_MASTER;
+    spi.NSS               = LL_SPI_NSS_SOFT;
+    spi.BitOrder          = cfg->order    ? LL_SPI_MSB_FIRST        : LL_SPI_LSB_FIRST;
+    spi.DataWidth         = cfg->size     ? LL_SPI_DATAWIDTH_16BIT  : LL_SPI_DATAWIDTH_8BIT;
+    spi.ClockPolarity     = cfg->polarity ? LL_SPI_POLARITY_HIGH    : LL_SPI_POLARITY_LOW;
+    spi.ClockPhase        = cfg->phase    ? LL_SPI_PHASE_2EDGE      : LL_SPI_PHASE_1EDGE;
+    spi.BaudRate          = prescalers[div];
+    spi.CRCCalculation    = LL_SPI_CRCCALCULATION_DISABLE;
+    LL_SPI_Init(SPI2, &spi);
+    LL_SPI_Enable(SPI2);
 
 #ifdef DEBUGPRINT
-    printf("Requested freq: %u.%u MHz\n\r", (u16)((u32)cfg->frequency/1000000),(u16)((u32)(cfg->frequency % 1000000)/100000));
-    printf("Setting SPI to %s\n\r",  spiSpd[(SPI_InitStructure.SPI_BaudRatePrescaler>>3)&7]);
+    printf("Requested freq: %lu Hz, SPI clock 24 MHz / %u\n\r", (unsigned long) cfg->frequency, 2u << div);
 #endif
-
-    SPI_Init(SPI2, &SPI_InitStructure);
-
-    SPI_CalculateCRC(SPI2, DISABLE);
-    SPI_Cmd(SPI2, ENABLE);
 
     SPI_PreinitDMA();
 }
 
+/////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+// System
+
+// TIM2 counts the 1 ms ticks of set_Timeout() (SupportFuncs.c)
 static void init_Timeout()
 {
-    NVIC_InitTypeDef NVIC_InitStructure;
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM2);
+    LL_TIM_DisableCounter(TIM2);
 
-    TIM_Cmd(TIM2,DISABLE);
-    TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+    // Only a real counter under/overflow may raise the update IRQ, not the UG
+    // prescaler-reload that set_Timeout() issues each call. Without this, that
+    // UG spuriously fires the timeout and sleeps/waits can return instantly.
+    LL_TIM_SetUpdateSource(TIM2, LL_TIM_UPDATESOURCE_COUNTER);
+    LL_TIM_ClearFlag_UPDATE(TIM2);
+    LL_TIM_EnableIT_UPDATE(TIM2);
 
-    TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
-
-    NVIC_InitStructure.NVIC_IRQChannel = TIM2_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 2;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&NVIC_InitStructure);
+    NVIC_SetPriority(TIM2_IRQn, 2);
+    NVIC_EnableIRQ(TIM2_IRQn);
 }
 
+// USART2 on PA2/PA3, 115200 8N1: debug output (DEBUGPRINT)
 static void init_debugUart()
 {
-    GPIO_InitTypeDef  GPIO_InitStructure;
-    USART_InitTypeDef USART_InitStructure;
+    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_3, LL_GPIO_MODE_FLOATING);
+    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_2, LL_GPIO_MODE_ALTERNATE);
+    LL_GPIO_SetPinSpeed(GPIOA, LL_GPIO_PIN_2, LL_GPIO_SPEED_FREQ_HIGH);
+    LL_GPIO_SetPinOutputType(GPIOA, LL_GPIO_PIN_2, LL_GPIO_OUTPUT_PUSHPULL);
 
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_3;
-    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_2;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_AF_PP;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    USART_InitStructure.USART_BaudRate = 115200;
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;
-    USART_InitStructure.USART_Parity = USART_Parity_No ;
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
-    USART_Init(USART2, &USART_InitStructure);
-    USART_Cmd(USART2, ENABLE);
+    LL_USART_InitTypeDef usart;
+    LL_USART_StructInit(&usart);
+    usart.BaudRate = 115200;
+    LL_USART_Init(USART2, &usart);
+    LL_USART_Enable(USART2);
 }
 
 static void RCC_Configuration()
 {
-    RCC_APB2PeriphClockCmd(0x0101D, ENABLE); // GPIO A,B,C, SPI, AFIO for SPI
-
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
-    RCC_APB1PeriphClockCmd(0x24005, ENABLE); // Usart 2, spi, spi afio, more spi
+    // As the StdPeriph version had it, plus USB
+    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_AFIO | LL_APB2_GRP1_PERIPH_GPIOA |
+                             LL_APB2_GRP1_PERIPH_GPIOB | LL_APB2_GRP1_PERIPH_GPIOC |
+                             LL_APB2_GRP1_PERIPH_SPI1  | LL_APB2_GRP1_PERIPH_USART1);
+    LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM2 | LL_APB1_GRP1_PERIPH_TIM4 |
+                             LL_APB1_GRP1_PERIPH_SPI2 | LL_APB1_GRP1_PERIPH_USART2 |
+                             LL_APB1_GRP1_PERIPH_USB);
+    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
 }
 
 static void InitSys()
 {
+    // Linked after the bootloader: the vectors are ours from here on
+    SCB->VTOR = BOARD_APP_BASE;
+
+    board_clock_init();
     RCC_Configuration();
-    init_debugUart(); // Debug uart
+    init_debugUart();
     init_Timeout();
 
     // Enable DWT timer
@@ -266,47 +274,50 @@ static void InitSys()
 int main()
 {
     InitSys();
-    Set_System();
-#ifdef BIGBOARD
-    SetPinDir(2, 12, 1);
-    USB_DIS_LO;
-#endif
-    Set_USBClock();
-    USB_Interrupts_Config();
-    USB_Init();
+    TAP_InitPins(); // first: BKPT must not float while a target comes out of reset
 
-    TAP_InitPins();
-	TAP_ResetState();
+    board_usb_reconnect();
+    tusb_rhport_init_t dev_init = { .role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_AUTO };
+    tusb_init(0, &dev_init);
 
-    uint8_t  *byteptr = (uint8_t  *) &receiveBuffer[0];
+    TAP_ResetState();
+
+    uint8_t *byteptr = (uint8_t *) &receiveBuffer[0];
 
 #ifdef DEBUGPRINT
     printf("adapter online\n\r");
 #endif
 
-	while(1)
-	{
-	    if (usbrec)
-	    {
-	        // We expect data in little-endian format.
-	        // Host makes sure not to mix commands. First command in queue determines what rest is allowed
-	        // Word[2] Contains command. Commands are split in categories of:
-	        // 0x00xx: TAP
-	        // 0x01xx: ???
+    while (1)
+    {
+        if (usb_poll())
+        {
+            // We expect data in little-endian format.
+            // Host makes sure not to mix commands. First command in queue determines what rest is allowed
+            // Word[2] Contains command. Commands are split in categories of:
+            // 0x00xx: TAP
+            // 0x01xx: ???
 
-	        switch (byteptr[5]) {
-	            case 0x00:
-	                TAP_Commands(receiveBuffer);
-	                break;
-	            default:
-	                break;
-	        }
+            switch (byteptr[5]) {
+                case 0x00:
+                    TAP_Commands(receiveBuffer);
+                    break;
+                default:
+                    break;
+            }
 
-	        usbrec = 0;
-	    }
-	}
+            usb_rxRelease();
+        }
 
-	return 0;
+        if (rebootRequest)
+        {
+            usb_txWait();
+            sleep(20); // the last packet off the wire
+            board_reboot_to_bootloader();
+        }
+    }
+
+    return 0;
 }
 
 void assert_failed(uint8_t* file, uint32_t line)

@@ -68,9 +68,10 @@ namespace bdmstuff
 
         private void frmMain_Shown(object sender, EventArgs e)
         {
+            // Selecting "Select target" runs the adapter probe, which enables the
+            // controls when it is done
             enableUserElements(false,0);
             populateECUlist();
-            enableUserElements(true,0);
         }
 
 
@@ -163,6 +164,8 @@ namespace bdmstuff
         private void enableUserElements(bool enable, int index)
         {
             cbxEcuType.Enabled = enable;
+            lblAdapter.Enabled = enable;
+            btnUpdate.Enabled  = enable;
 
             lblFlash.Enabled   = false;
             btnFlash.Enabled   = false;
@@ -248,10 +251,39 @@ namespace bdmstuff
         }
 
 
+        // Adapter firmware update over its USB bootloader (firmware 2.0+)
+        private void btnUpdate_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog() { Filter = "bdmtoy app image (firmware.bin)|*.bin", Multiselect = false })
+            {
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    enableUserElements(false, 0);
+                    Application.DoEvents();
+                    BackgroundWorker bgWorker = new BackgroundWorker();
+                    bgWorker.DoWork += new DoWorkEventHandler(dllhandler.Update);
+                    bgWorker.RunWorkerCompleted += new RunWorkerCompletedEventHandler(ImDone);
+                    bgWorker.RunWorkerAsync(ofd.FileName);
+                }
+            }
+        }
+
+
         private void cbxEcuType_SelectedIndexChanged(object sender, EventArgs e)
         {
             dllhandler.ECUindex = cbxEcuType.SelectedIndex;
-            enableUserElements(true, cbxEcuType.SelectedIndex);
+
+            // "Select target", at startup or picked again: look for the adapter
+            if (cbxEcuType.SelectedIndex == 0)
+            {
+                enableUserElements(false, 0);
+                BackgroundWorker bgWorker = new BackgroundWorker();
+                bgWorker.DoWork += new DoWorkEventHandler(dllhandler.Probe);
+                bgWorker.RunWorkerCompleted += new RunWorkerCompletedEventHandler(ImDone);
+                bgWorker.RunWorkerAsync();
+            }
+            else
+                enableUserElements(true, cbxEcuType.SelectedIndex);
         }
 
 

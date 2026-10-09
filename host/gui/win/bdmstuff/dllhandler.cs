@@ -47,9 +47,47 @@ namespace bdmstuff
             return retList;
         }
 
+        // Runs op with the adapter's USB link open; false if there is no adapter
+        private bool Linked(Action op)
+        {
+            try
+            {
+                using (new UsbLink(gizmo))
+                    op();
+                return true;
+            }
+            catch (Exception e)
+            {
+                CastInfoEvent(e.Message);
+                return false;
+            }
+        }
+
+        // Look for the adapter and report its firmware (startup, and "Select target")
+        public void Probe(object sender, DoWorkEventArgs workEvent)
+        {
+            Linked(() =>
+            {
+                int v = gizmo.FirmwareVersion();
+                if (v > 0)
+                    CastInfoEvent("Adapter firmware v" + (v >> 8) + "." + (v & 0xFF) + " connected");
+                else if (v == 0)
+                    CastInfoEvent("Adapter connected, but its firmware is older than v1.0: please update it (see firmware/README.md)");
+                else
+                    CastInfoEvent("Adapter found, but it does not answer: replug it");
+            });
+        }
+
+        // Firmware update over the adapter's USB bootloader (firmware 2.0+)
+        public void Update(object sender, DoWorkEventArgs workEvent)
+        {
+            byte[] image = File.ReadAllBytes((string)workEvent.Argument);
+            CastProgressEvent(0);
+            UsbLink.Update(gizmo, image, CastInfoEvent, CastProgressEvent);
+        }
+
         private void printGarbageInfo()
         {
-            CastInfoEvent(gizmo.returnCoreVersion());
             uint flashSize = gizmo.returnTargetSizeFLASH(ECUindex);
             uint sramSize  = gizmo.returnTargetSizeSRAM(ECUindex);
             uint eepromSz  = gizmo.returnTargetSizeEEPROM(ECUindex);
@@ -74,13 +112,6 @@ namespace bdmstuff
             CastProgressEvent(progevent.percentage());
         }
 
-        public void Cleanup()
-        {
-            CastInfoEvent("Closing device");
-            Debug.Assert(gizmo != null);
-            gizmo.Close();
-        }
-
         public void Dump(object sender, DoWorkEventArgs workEvent)
         {
             BackgroundWorker bw = sender as BackgroundWorker;
@@ -94,7 +125,8 @@ namespace bdmstuff
             printGarbageInfo();
 
             sw.Start();
-            gizmo.TAP_Dump(ECUindex);
+            if (!Linked(() => gizmo.TAP_Dump(ECUindex)))
+                return;
             sw.Stop();
             int ms = sw.Elapsed.Milliseconds + (sw.Elapsed.Seconds * 1000) + (sw.Elapsed.Minutes * 60000);
             CastInfoEvent("Took: " + ms.ToString("D") + " ms");
@@ -146,7 +178,8 @@ namespace bdmstuff
             printGarbageInfo();
 
             sw.Start();
-            gizmo.TAP_ReadEeprom(ECUindex);
+            if (!Linked(() => gizmo.TAP_ReadEeprom(ECUindex)))
+                return;
             sw.Stop();
             int ms = sw.Elapsed.Milliseconds + (sw.Elapsed.Seconds * 1000) + (sw.Elapsed.Minutes * 60000);
             CastInfoEvent("Took: " + ms.ToString("D") + " ms");
@@ -196,7 +229,8 @@ namespace bdmstuff
             printGarbageInfo();
 
             sw.Start();
-            gizmo.TAP_Flash(ECUindex, buffer);
+            if (!Linked(() => gizmo.TAP_Flash(ECUindex, buffer)))
+                return;
             sw.Stop();
 
             int min = sw.Elapsed.Minutes;
@@ -219,7 +253,8 @@ namespace bdmstuff
             printGarbageInfo();
 
             sw.Start();
-            gizmo.TAP_WriteEeprom(ECUindex, buffer);
+            if (!Linked(() => gizmo.TAP_WriteEeprom(ECUindex, buffer)))
+                return;
             sw.Stop();
             int ms = sw.Elapsed.Milliseconds + (sw.Elapsed.Seconds * 1000);
             CastInfoEvent("Took: " + ms.ToString("D") + " ms");
@@ -238,7 +273,8 @@ namespace bdmstuff
             printGarbageInfo();
 
             sw.Start();
-            gizmo.TAP_ReadSram(ECUindex);
+            if (!Linked(() => gizmo.TAP_ReadSram(ECUindex)))
+                return;
             sw.Stop();
             int ms = sw.Elapsed.Milliseconds + (sw.Elapsed.Seconds * 1000) + (sw.Elapsed.Minutes * 60000);
             CastInfoEvent("Took: " + ms.ToString("D") + " ms");

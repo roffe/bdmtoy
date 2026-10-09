@@ -28,7 +28,7 @@ void registerBtn::actRegisterBtn(QRadioButton *parent, uint32_t index)
 
 void registerBtn::btnRadioSlot()
 {
-    QString text = "Selected reg index: " + QString().sprintf("%d", m_index);
+    QString text = QString("Selected reg index: %1").arg(m_index);
     glue_.CastMessage(text.toUtf8());
     selReg = m_index;
 }

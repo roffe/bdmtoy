@@ -15,6 +15,7 @@
 
 #include "../shared/str_tools.h"
 #include "../shared/usb_glue.h"
+#include "../../shared/toy_update.h"
 
 static void castText(char *s) { printf("%s\n", s); }
 static void castprog(int prog) {}
@@ -263,11 +264,28 @@ static void printTargets(void)
     }
 }
 
+static void updateText(const char *s) { printf("%s\n", s); }
+static void updateProg(int percent) { printf("\r%3d%%", percent); fflush(stdout); if (percent == 100) printf("\n"); }
+
+// --update <file>: write an app image over the adapter's USB bootloader
+static int updateFirmware(const char *fname)
+{
+    static uint8_t image[0xC000 + 1];
+    FILE *fp = fopen(fname, "rb");
+    if (!fp)
+    {
+        printf("Could not open file!\n");
+        return 1;
+    }
+    const size_t len = fread(image, 1, sizeof image, fp);
+    fclose(fp);
+
+    return toy_update(image, len, updateText, updateProg) ? 1 : 0;
+}
+
 int main(int argc, char *argv[])
 {
     int target = 0xffff;
-
-    printf("%s\n", core_VersionString());
 
     if (argc < 2)
     {
@@ -278,8 +296,23 @@ int main(int argc, char *argv[])
                "    --flash <file>                - Flash target from file\n"
                "    --runsram <file> <address>    - Upload blob to address and run it\n"
                "    --runwait <file> <address>    - Reset and run target, wait for it to enter bdm on its own, upload blob and then resume operation (Only target 7)\n"
-               "    --nuke                        - Nuke hcs12 flash (Only target 7)\n");
+               "    --nuke                        - Nuke hcs12 flash (Only target 7)\n"
+               "    --update <file>               - Update the adapter firmware over USB (2.0+; file: firmware/bin/firmware.bin)\n");
         exit(1);
+    }
+
+    // Firmware update: needs no target, and the adapter to itself
+    for (int32_t i = 1; i < argc; i++)
+    {
+        if (strstr(argv[i], "--update"))
+        {
+            if (i + 1 >= argc)
+            {
+                printf("You must supply a filename\n");
+                exit(1);
+            }
+            exit(updateFirmware(argv[i + 1]));
+        }
     }
 
     // Print targets
@@ -332,6 +365,22 @@ int main(int argc, char *argv[])
     if (usb_test() != RET_OK)
     {
         exit(1);
+    }
+
+    // Say which adapter firmware this is before doing anything with it
+    uint16_t version = 0;
+    switch (core_FirmwareVersion(&version))
+    {
+        case RET_OK:
+            printf("Adapter firmware v%u.%u connected\n", (unsigned)(version >> 8), (unsigned)(version & 0xFF));
+            break;
+        case RET_NOTSUP:
+            printf("Adapter connected, but its firmware is older than v1.0: please update it (see firmware/README.md)\n");
+            break;
+        default:
+            printf("Adapter found, but it does not answer: replug it\n");
+            usb_CleanUp();
+            exit(1);
     }
 
     // One is taken care of by usb_test() in usb_glue.c

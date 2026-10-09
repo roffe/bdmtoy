@@ -15,6 +15,15 @@
 
 /host/cli/both/*.bin
 /host/cli/both/*.exe
+
+# Built host apps (the GUI builds with CMake into build/)
+/host/cli/both/debugtool
+/host/gui/nix/bdmstuff/build
+
+# Firmware build objects (bin/ holds the release images and stays tracked)
+/firmware/obj/app
+/firmware/obj/boot
+/firmware/obj/*.hex
 /host_mk2/apps/cli/both/*.bin
 /host_mk2/apps/cli/both/*.exe
 
@@ -41,3 +50,6 @@
 
 /host/gui/win/namedll/Debug/*
 /host/gui/win/namedll/Release/*
+# namedll (C++/CLI) x64 build output: objects, and the solution-level DLL
+/host/gui/win/namedll/x64
+/host/gui/win/bdmstuff/x64

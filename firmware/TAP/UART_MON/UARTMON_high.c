@@ -1,5 +1,8 @@
 #include "../TAP_shared.h"
 #include "UARTMON_private.h"
+#include "stm32f1xx_ll_gpio.h"
+#include "stm32f1xx_ll_rcc.h"
+#include "stm32f1xx_ll_usart.h"
 
 
 /////////////////////////////////////////////////////////////
@@ -12,26 +15,26 @@ static uint16_t UARTMON_putc(uint8_t data)
 {
     volatile uint16_t rec = ~data;
 
-    // while(!USART_GetFlagStatus(USART1, USART_FLAG_TXE))  ;
+    // while(!LL_USART_IsActiveFlag_TXE(USART1))  ;
 
     // Fuck off, interrupts!
     // __asm volatile("cpsid i");
 
     // Clear old junk
-    if (USART_GetFlagStatus(USART1, USART_FLAG_RXNE))
+    if (LL_USART_IsActiveFlag_RXNE(USART1))
         rec = USART1->DR&0xffff;
 
     // Send
     USART1->DR = data;
 
-    while(!USART_GetFlagStatus(USART1, USART_FLAG_TXE))  ;
+    while(!LL_USART_IsActiveFlag_TXE(USART1))  ;
 
     // Enable interrupts
     // __asm volatile("cpsie i");
 
     // This is just the self-received byte..
     set_Timeout(500);
-    while (!(USART_GetFlagStatus(USART1, USART_FLAG_RXNE)) && !get_Timeout())  ;
+    while (!(LL_USART_IsActiveFlag_RXNE(USART1)) && !get_Timeout())  ;
     if (!get_Timeout())
         rec = USART1->DR&0xffff;
 
@@ -49,7 +52,7 @@ static uint16_t UARTMON_sendByte(uint8_t data)
 
     // Ack byte sent by the mpu
     set_Timeout(500);
-    while (!(USART_GetFlagStatus(USART1, USART_FLAG_RXNE)) && !get_Timeout())  ;
+    while (!(LL_USART_IsActiveFlag_RXNE(USART1)) && !get_Timeout())  ;
     if (!get_Timeout())
     {
         rec = USART1->DR&0xffff;
@@ -88,7 +91,7 @@ static uint16_t UARTMON_ReadMemory_int(uint32_t address, uint16_t *data)
         UARTMON_sendByte(address)    == RET_OK  )
     {
         set_Timeout(500);
-        while (!(USART_GetFlagStatus(USART1, USART_FLAG_RXNE)) && (get_Timeout() == RET_OK))  ;
+        while (!(LL_USART_IsActiveFlag_RXNE(USART1)) && (get_Timeout() == RET_OK))  ;
         if (get_Timeout() == RET_OK)
         {
 
@@ -121,39 +124,27 @@ static uint16_t UARTMON_WriteMemory_int(uint32_t address, uint16_t data)
 
 void UARTMON_setup(const uint32_t TargetFreq)
 {
-    GPIO_InitTypeDef  GPIO_InitStructure;
-    USART_InitTypeDef USART_InitStructure;
+    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_10, LL_GPIO_MODE_FLOATING);
 
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_10;
-    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IN_FLOATING; // GPIO_Mode_IN_FLOATING; // GPIO_Mode_IPU
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_9;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_AF_OD;  // Open drain since it's a one-wire implementation
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
+    // Open drain since it's a one-wire implementation
+    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_9, LL_GPIO_MODE_ALTERNATE);
+    LL_GPIO_SetPinSpeed(GPIOA, LL_GPIO_PIN_9, LL_GPIO_SPEED_FREQ_HIGH);
+    LL_GPIO_SetPinOutputType(GPIOA, LL_GPIO_PIN_9, LL_GPIO_OUTPUT_OPENDRAIN);
 
     // External freq is divided by 4 to get the bus frequency, that is then divided by 256 to get the baudrate
-    USART_InitStructure.USART_BaudRate = TargetFreq;
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;
-    USART_InitStructure.USART_Parity = USART_Parity_No ;
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
-    USART_Init(USART1, &USART_InitStructure);
-    USART_Cmd(USART1, ENABLE);
+    LL_USART_InitTypeDef usart;
+    LL_USART_StructInit(&usart);
+    usart.BaudRate = TargetFreq;
+    LL_USART_Disable(USART1);
+    LL_USART_Init(USART1, &usart);
+    LL_USART_Enable(USART1);
 
     // Enable clock output on MCO (GPIOA 8)
     // HSE is 8 (eight) MegaHertz
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_8;
-
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    RCC_MCOConfig(RCC_MCO_HSE);
+    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_8, LL_GPIO_MODE_ALTERNATE);
+    LL_GPIO_SetPinSpeed(GPIOA, LL_GPIO_PIN_8, LL_GPIO_SPEED_FREQ_HIGH);
+    LL_GPIO_SetPinOutputType(GPIOA, LL_GPIO_PIN_8, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_RCC_ConfigMCO(LL_RCC_MCO1SOURCE_HSE);
 }
 
 void UARTMON_TargetReset(const uint16_t *in, uint16_t *out)

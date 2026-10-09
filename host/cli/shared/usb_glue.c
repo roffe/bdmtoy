@@ -11,19 +11,17 @@
 #else
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include "../../libusb/libusb/libusb.h"
+#include <libusb.h>
 #endif
 
 #include "../../../shared/enums.h"
 #include "../../../shared/cmddesc.h"
 #include "../../core/core.h"
 
+#define NUM_INTERFACES (2)
 
-
-#define NUM_INTERFACES   (2)
-
-#define IN_EP            (1)
-#define OUT_EP           (3)
+#define IN_EP (1)
+#define OUT_EP (3)
 
 static pthread_t thread_id;
 
@@ -33,20 +31,20 @@ static libusb_context *ctx = NULL;
 static struct libusb_transfer *transfer_in = NULL;
 static struct libusb_transfer *transfer_out = NULL;
 
-static uint8_t in_buffer[ ADAPTER_BUFzOUT ]; // adapter -> host
-static uint8_t out_buffer[ ADAPTER_BUFzIN ]; // host -> adapter
+static uint8_t in_buffer[ADAPTER_BUFzOUT]; // adapter -> host
+static uint8_t out_buffer[ADAPTER_BUFzIN]; // host -> adapter
 
 static volatile uint32_t keepRunning = 0;
 
 static volatile uint32_t sendBusy = 0;
 
-
 ////////////////////////////////////////////////////////////////////
 // Comm. handling
 
-static void usbSendCallback(struct libusb_transfer *transfer) {
+static void usbSendCallback(struct libusb_transfer *transfer)
+{
     sendBusy = 0;
-    if ( transfer->status != 0 )
+    if (transfer->status != 0)
         printf("<USB send> Error code %s\n", libusb_error_name(transfer->status));
 }
 
@@ -54,13 +52,15 @@ static void usbSendData(void *ptr, uint32_t toSend)
 {
     int retStatus;
 
-    while ( sendBusy ){}
+    while (sendBusy)
+    {
+    }
     sendBusy = 1;
 
     memcpy(out_buffer, ptr, toSend);
     transfer_out->length = (int32_t)toSend;
 
-    if ((retStatus = libusb_submit_transfer( transfer_out )) != 0)
+    if ((retStatus = libusb_submit_transfer(transfer_out)) != 0)
         printf("<USB send> Error code %s\n", libusb_error_name(retStatus));
 }
 
@@ -68,13 +68,13 @@ static void usbReceiveCallback(struct libusb_transfer *transfer)
 {
     int retStatus;
 
-    if ( transfer->status != 0 && transfer->status != LIBUSB_TRANSFER_CANCELLED )
+    if (transfer->status != 0 && transfer->status != LIBUSB_TRANSFER_CANCELLED)
         printf("<USB receive> Error code %s\n", libusb_error_name(transfer->status));
 
-    if ( transfer->actual_length >= 0 )
+    if (transfer->actual_length >= 0)
         core_HandleRecData(transfer->buffer, (uint32_t)transfer->actual_length);
 
-    if ((retStatus = libusb_submit_transfer( transfer )) != 0)
+    if ((retStatus = libusb_submit_transfer(transfer)) != 0)
         printf("<USB receive> Error code %s\n", libusb_error_name(retStatus));
 }
 
@@ -84,8 +84,9 @@ static void *usbAsyncThread(void *vargp)
 
     keepRunning = 1;
 
-    while ( keepRunning ) {
-        if ( (retStatus = libusb_handle_events_completed( ctx, NULL )) != 0 )
+    while (keepRunning)
+    {
+        if ((retStatus = libusb_handle_events_completed(ctx, NULL)) != 0)
             printf("<USB evt loop> Error code %s\n", libusb_error_name(retStatus));
     }
 
@@ -99,7 +100,8 @@ static uint32_t usb_OpenDevice()
 {
     int res;
 
-    if (libusb_init(&ctx) != 0) {
+    if (libusb_init(&ctx) != 0)
+    {
         printf("Could not initialise libusb\n");
         return RET_ABANDON;
     }
@@ -123,7 +125,8 @@ static uint32_t usb_OpenDevice()
         if (libusb_kernel_driver_active(handle, i))
             libusb_detach_kernel_driver(handle, i);
 
-        if ((res = libusb_claim_interface(handle, i)) != 0)
+        // Interface 1 is only there on the CDC layout of firmware before 2.2
+        if ((res = libusb_claim_interface(handle, i)) != 0 && i == 0)
         {
             printf("Error claiming interface: %s\n", libusb_error_name(res));
             return RET_ABANDON;
@@ -170,7 +173,7 @@ uint32_t usb_test()
     pthread_create(&thread_id, NULL, usbAsyncThread, NULL);
 
     // Install pointer
-    core_InstallSendArray( usbSendData );
+    core_InstallSendArray(usbSendData);
 
     waitms(2000);
 
@@ -179,23 +182,24 @@ uint32_t usb_test()
 
 uint32_t usb_CleanUp()
 {
-    if ( keepRunning ) {
+    if (keepRunning)
+    {
 
         keepRunning = 0;
 
-        libusb_cancel_transfer( transfer_in );
-        libusb_cancel_transfer( transfer_out );
+        libusb_cancel_transfer(transfer_in);
+        libusb_cancel_transfer(transfer_out);
 
-        waitms( 100 );
+        waitms(100);
 
-        libusb_close( handle );
-        pthread_join( thread_id, NULL );
+        libusb_close(handle);
+        pthread_join(thread_id, NULL);
 
-        libusb_free_transfer( transfer_in );
-        libusb_free_transfer( transfer_out );
+        libusb_free_transfer(transfer_in);
+        libusb_free_transfer(transfer_out);
     }
 
-    if ( ctx != NULL )
+    if (ctx != NULL)
         libusb_exit(ctx);
 
     transfer_out = NULL;

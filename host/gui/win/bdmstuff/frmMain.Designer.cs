@@ -39,6 +39,8 @@
             this.btnEeWrite = new System.Windows.Forms.Button();
             this.lblSrm = new System.Windows.Forms.Label();
             this.btnSrmRead = new System.Windows.Forms.Button();
+            this.lblAdapter = new System.Windows.Forms.Label();
+            this.btnUpdate = new System.Windows.Forms.Button();
             this.SuspendLayout();
             // 
             // btnFlash
@@ -162,11 +164,35 @@
             this.btnSrmRead.UseVisualStyleBackColor = true;
             this.btnSrmRead.Click += new System.EventHandler(this.btnSrmRead_Click);
             // 
+            // lblAdapter
+            // 
+            this.lblAdapter.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.lblAdapter.AutoSize = true;
+            this.lblAdapter.Font = new System.Drawing.Font("Microsoft Sans Serif", 9.75F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.lblAdapter.Location = new System.Drawing.Point(727, 274);
+            this.lblAdapter.Name = "lblAdapter";
+            this.lblAdapter.Size = new System.Drawing.Size(65, 16);
+            this.lblAdapter.TabIndex = 85;
+            this.lblAdapter.Text = "Adapter";
+            // 
+            // btnUpdate
+            // 
+            this.btnUpdate.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnUpdate.Location = new System.Drawing.Point(730, 293);
+            this.btnUpdate.Name = "btnUpdate";
+            this.btnUpdate.Size = new System.Drawing.Size(107, 50);
+            this.btnUpdate.TabIndex = 86;
+            this.btnUpdate.Text = "Update";
+            this.btnUpdate.UseVisualStyleBackColor = true;
+            this.btnUpdate.Click += new System.EventHandler(this.btnUpdate_Click);
+            // 
             // frmMain
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(955, 388);
+            this.Controls.Add(this.btnUpdate);
+            this.Controls.Add(this.lblAdapter);
             this.Controls.Add(this.btnSrmRead);
             this.Controls.Add(this.lblSrm);
             this.Controls.Add(this.btnEeRead);
@@ -200,5 +226,7 @@
         private System.Windows.Forms.Button btnEeWrite;
         private System.Windows.Forms.Label lblSrm;
         private System.Windows.Forms.Button btnSrmRead;
+        private System.Windows.Forms.Label lblAdapter;
+        private System.Windows.Forms.Button btnUpdate;
     }
 }

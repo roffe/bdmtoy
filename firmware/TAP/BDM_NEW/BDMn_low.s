@@ -1,6 +1,8 @@
 .thumb
 .global BDMNEW_DMADumpAS_USB_type2
 .global BDMNEW_DMAFillAS
+.type BDMNEW_DMADumpAS_USB_type2, %function
+.type BDMNEW_DMAFillAS, %function
 .align 8
 
 # # # # # # # # # # # # # # # # # # # # # # #
@@ -137,6 +139,7 @@
     str    r6, [r3]
 .endm
 
+.thumb_func
 BDMNEW_DMADumpAS_USB_type2:
     push  {r4 - r7, lr}
     sub    sp, #44
@@ -307,6 +310,7 @@ bx r1
 
 # 3249 mS
 # 1250
+.thumb_func
 BDMNEW_DMAFillAS:
     push  {r4 - r7, lr}
     sub    sp, #28

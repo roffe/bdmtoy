@@ -31,8 +31,12 @@ void MainWindow::ECUIndexChange(int index)
         core_InstallMessage(  reinterpret_cast<void*>(&MessagePoint)  );
         core_PrintInfo(static_cast<uint>(index));
     }
-    else
-        glue_.CastMessage(core_VersionString());
+    // "Select target", at startup or picked again: look for the adapter
+    else if (index == 0)
+    {
+        EnableAll(false);
+        worker_.StartProbe();
+    }
 }
 
 void MainWindow::ECUIndexLogic(int index)
@@ -75,6 +79,12 @@ void MainWindow::btnFlashClick()
     worker_.StartFlash(GetECUIndex());
 }
 
+void MainWindow::btnUpdateClick()
+{
+    EnableAll(false);
+    worker_.StartUpdate(GetECUIndex());
+}
+
 void MainWindow::btnDebugClick()
 {
     // EnableAll(false);
@@ -91,7 +101,7 @@ void MainWindow::PushTextMessage(const char *message)
     QTime time = QTime::currentTime();
 
     if (msg.length() > 1)
-        msg = "<" + time.toString() + ":" + QString().sprintf("%03d", time.msec()) + "> " + message;
+        msg = "<" + time.toString() + ":" + QString("%1").arg(time.msec(), 3, 10, QChar('0')) + "> " + message;
 
     textmutex.lock();
     ui->textBrowser->append(msg);
@@ -132,9 +142,13 @@ int MainWindow::GetECUIndex()
     return ui->comboBox->currentIndex();
 }
 
+// The target list, and the adapter update with it: both whenever no
+// operation runs
 void MainWindow::EnableECUlist(bool enable)
 {
     ui->comboBox->setEnabled(enable);
+    ui->btnUpdate->setEnabled(enable);
+    ui->lblAdapter->setEnabled(enable);
 }
 
 void MainWindow::EnableFlash(bool enable)
@@ -187,6 +201,7 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->btnFlash   , SIGNAL (released()),this, SLOT (btnFlashClick()));
     connect(ui->comboBox   , SIGNAL (currentIndexChanged(int)),this, SLOT (ECUIndexChange(int)));
     connect(ui->btnDebug   , SIGNAL (released()),this, SLOT (btnDebugClick()));
+    connect(ui->btnUpdate  , SIGNAL (released()),this, SLOT (btnUpdateClick()));
 }
 
 MainWindow::~MainWindow()

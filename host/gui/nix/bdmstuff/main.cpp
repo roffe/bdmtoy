@@ -42,9 +42,8 @@ int main(int argc, char *argv[])
     for (uint i = 1; i <= noTarg; i++ )
         w.PushECUItem(core_TargetName(i));
 
-    // Index 0 is used as a label. Do not enable any buttons
-    w.EnableAll(false);
-    w.EnableECUlist(true);
+    // Index 0 is used as a label. Selecting it (as adding it just did) runs the
+    // adapter probe, which enables the target list once it is done
 
     w.show();
 

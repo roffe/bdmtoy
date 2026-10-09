@@ -1,29 +1,26 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.28010.2048
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "bdmstuff", "bdmstuff.csproj", "{79430524-7A27-49EB-BBD9-68521E3CDF82}"
-	ProjectSection(ProjectDependencies) = postProject
-		{76CB438F-5177-4690-BB17-8251C415287E} = {76CB438F-5177-4690-BB17-8251C415287E}
-	EndProjectSection
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "bdmstuff", "bdmstuff.csproj", "{79430524-7A27-49EB-BBD9-68521E3CDF82}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "namedll", "..\namedll\namedll.vcxproj", "{76CB438F-5177-4690-BB17-8251C415287E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
-		Debug|x86 = Debug|x86
-		Release|x86 = Release|x86
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Debug|x86.ActiveCfg = Debug|x86
-		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Debug|x86.Build.0 = Debug|x86
-		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Release|x86.ActiveCfg = Release|x86
-		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Release|x86.Build.0 = Release|x86
-		{76CB438F-5177-4690-BB17-8251C415287E}.Debug|x86.ActiveCfg = Debug|Win32
-		{76CB438F-5177-4690-BB17-8251C415287E}.Debug|x86.Build.0 = Debug|Win32
-		{76CB438F-5177-4690-BB17-8251C415287E}.Release|x86.ActiveCfg = Release|Win32
-		{76CB438F-5177-4690-BB17-8251C415287E}.Release|x86.Build.0 = Release|Win32
+		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Debug|x64.ActiveCfg = Debug|x64
+		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Debug|x64.Build.0 = Debug|x64
+		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Release|x64.ActiveCfg = Release|x64
+		{79430524-7A27-49EB-BBD9-68521E3CDF82}.Release|x64.Build.0 = Release|x64
+		{76CB438F-5177-4690-BB17-8251C415287E}.Debug|x64.ActiveCfg = Debug|x64
+		{76CB438F-5177-4690-BB17-8251C415287E}.Debug|x64.Build.0 = Debug|x64
+		{76CB438F-5177-4690-BB17-8251C415287E}.Release|x64.ActiveCfg = Release|x64
+		{76CB438F-5177-4690-BB17-8251C415287E}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

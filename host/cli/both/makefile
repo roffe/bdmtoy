@@ -9,6 +9,8 @@ ifeq ($(OS),Windows_NT)
 LIBUSBVER=MinGW64
 LDFLAGS+= -m64 -L../shared/libs/win/$(LIBUSBVER)/static
 CFLAGS+= -m64 -I../shared/libs/win/include
+else
+CFLAGS+= $(shell pkg-config --cflags libusb-1.0)
 endif
 
 .PHONY: all clean
@@ -19,7 +21,8 @@ BUILDMSG:
 	@echo Building..
 
 USBOBJS=\
-	build/usb_glue.o
+	build/usb_glue.o \
+	build/toy_update.o
 
 APPOBJS=\
 	$(USBOBJS) \
@@ -52,6 +55,9 @@ build/str_tools.o:   ../shared/str_tools.c
 	@$(CC) $(CFLAGS) -Wall $< -c -o $@
 
 build/usb_glue.o:   ../shared/usb_glue.c 
+	@$(CC) $(CFLAGS) -Wall $< -c -o $@
+
+build/toy_update.o:   ../../shared/toy_update.c 
 	@$(CC) $(CFLAGS) -Wall $< -c -o $@
 
 # Core

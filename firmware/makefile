@@ -1,246 +1,120 @@
+# bdmtoy firmware: the app (bin/firmware.*) and the USB DFU bootloader
+# (bin/bootloader.*). bin/bdmtoy-full.hex holds both, for a first flash over
+# SWD; after that the app is updated over USB (README.md).
+#
+# Libraries are vendored in lib/ (lib/VERSIONS.md).
 
-# I use several gcc toolchains depending on what I do. You should be able to just comment out this and use the default
-# Keep in mind that -O2 us quite agressive and has caused me a lot of trouble with some. You might want to go down to -O1 at the expense of a slightly slower adapter
-GCCPATH="D:/ARM_GCC/6 2017-q2-update/bin/"
-BASENAME=arm-none-eabi
+BASENAME = arm-none-eabi
+CC       = $(BASENAME)-gcc
+OBJCOPY  = $(BASENAME)-objcopy
+SIZE     = $(BASENAME)-size
 
-CC=$(GCCPATH)$(BASENAME)-gcc
-CPP=$(GCCPATH)$(BASENAME)-c++
-LD=$(GCCPATH)$(BASENAME)-ld
-OBJCOPY=$(GCCPATH)$(BASENAME)-objcopy
-SIZE=$(GCCPATH)$(BASENAME)-size
-GDB=$(GCCPATH)$(BASENAME)-gdb
+# Keep in mind that -O2 is quite aggressive and has caused trouble with the
+# timing-sensitive TAP code; -O1 it is.
+CPU      = -mcpu=cortex-m3 -mthumb
+DEFS     = -DSTM32F103xB -DUSE_FULL_LL_DRIVER -DHSE_VALUE=8000000 $(DEVFLAGS)
+INCS     = -I. -Iboard \
+           -Ilib/CMSIS/Core/Include \
+           -Ilib/cmsis_device_f1/Include \
+           -Ilib/stm32f1xx_ll/Inc \
+           -Ilib/tinyusb/src
+CFLAGS   = $(CPU) -std=gnu11 -O1 -g3 -Wall -ffunction-sections -fdata-sections $(DEFS) $(INCS)
+ASFLAGS  = $(CPU) -g3 $(DEFS)
+LDFLAGS  = $(CPU) -Wl,--gc-sections -nostartfiles --specs=nano.specs --specs=nosys.specs
 
-TARGPROC=-mcpu=cortex-m3 -mthumb
+TUSB = lib/tinyusb/src
+LIBSRC = \
+	lib/cmsis_device_f1/Source/system_stm32f1xx.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_gpio.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_rcc.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_spi.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_tim.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_usart.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_utils.c \
+	lib/stm32f1xx_ll/Src/stm32f1xx_ll_dma.c \
+	$(TUSB)/tusb.c \
+	$(TUSB)/common/tusb_fifo.c \
+	$(TUSB)/device/usbd.c \
+	$(TUSB)/portable/st/stm32_fsdev/dcd_stm32_fsdev.c \
+	$(TUSB)/portable/st/stm32_fsdev/fsdev_common.c \
+	board/board.c
+LIBASM = lib/cmsis_device_f1/Source/startup_stm32f103xb.s
 
-SHAREDC=-ffunction-sections -O1 -Wall -nostartfiles -g3 -gdwarf-2
+APPSRC = \
+	main.c \
+	SupportFuncs.c \
+	app/usb_descriptors.c \
+	$(TUSB)/class/vendor/vendor_device.c \
+	TAP/TAP_shared.c \
+	TAP/BDM_HC12/BDMs_high.c \
+	TAP/BDM_NEW/BDMn_high.c \
+	TAP/BDM_OLD/BDMo_high.c \
+	TAP/JTAG/JTAG_high.c \
+	TAP/NEXUS/NEXUS_high.c \
+	TAP/UART_MON/UARTMON_high.c
+APPASM = \
+	TAP/TAP_lowlev.s \
+	TAP/BDM_HC12/BDMs_low.s \
+	TAP/BDM_NEW/BDMn_low.s \
+	TAP/BDM_OLD/BDMo_low.s
 
-# Include development makefile if present
-# -include ../.private/firmdevflags
+BOOTSRC = \
+	bootloader/main.c \
+	bootloader/usb_descriptors.c \
+	$(TUSB)/class/dfu/dfu_device.c
 
-# Some of the library code is using if flags
-CODEFLAGS=-DSTM32F103C8 -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER -D__ASSEMBLY__ $(DEVFLAGS) 
+# Each image gets its own objects: they see different tusb_config.h files.
+APPOBJ  = $(addprefix obj/app/,  $(APPSRC:.c=.o)  $(APPASM:.s=.o)  $(LIBSRC:.c=.o) $(LIBASM:.s=.o))
+BOOTOBJ = $(addprefix obj/boot/, $(BOOTSRC:.c=.o) $(LIBSRC:.c=.o) $(LIBASM:.s=.o))
 
-HEADERPATHS=\
-	-ISyssup/CMSIS/Device/ST/STM32F10x \
-	-ISyssup/STM32F10x_StdPeriph_Driver/inc \
-	-ISyssup/CMSIS/Include \
-	-ISyssup/CMSIS \
-	-ISyssup/CMSIS/Device \
-	-IUSB \
-	-ISyssup/STM32F10x_StdPeriph_Driver \
-	-ISyssup/STM32_USB-FS-Device_Driver/inc \
-	-ISyssup/CMSIS/Device/ST \
-	-ISyssup/STM32_USB-FS-Device_Driver
+.PHONY: all clean flash flash-app
 
-CFLAGS= $(TARGPROC) $(SHAREDC) -std=gnu99 $(CODEFLAGS) $(HEADERPATHS)
+all: bin/firmware.bin bin/firmware.hex bin/bootloader.bin bin/bootloader.hex bin/bdmtoy-full.hex
+	@$(SIZE) bin/bootloader.elf bin/firmware.elf
 
-.PHONY: all flash debug
+obj/app/%.o: %.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Iapp -c $< -o $@
+obj/app/%.o: %.s
+	@mkdir -p $(dir $@)
+	@$(CC) $(ASFLAGS) -c $< -o $@
+obj/boot/%.o: %.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Ibootloader -c $< -o $@
+obj/boot/%.o: %.s
+	@mkdir -p $(dir $@)
+	@$(CC) $(ASFLAGS) -c $< -o $@
 
-all : firmware
+bin/firmware.elf: $(APPOBJ) link_app.ld link_common.ld
+	@mkdir -p bin
+	@$(CC) $(LDFLAGS) -Wl,-Map=bin/firmware.map -Tlink_app.ld -o $@ $(APPOBJ)
 
-flash : all
-debug : startdebug
+bin/bootloader.elf: $(BOOTOBJ) link_boot.ld link_common.ld
+	@mkdir -p bin
+	@$(CC) $(LDFLAGS) -Wl,-Map=bin/bootloader.map -Tlink_boot.ld -o $@ $(BOOTOBJ)
 
-TAPOBJS=\
-	obj/TAP_shared.o \
-	obj/TAP_lowlev.o \
-	obj/BDMs_high.o \
-	obj/BDMs_low.o \
-	obj/BDMn_high.o \
-	obj/BDMn_low.o \
-	obj/BDMo_high.o \
-	obj/BDMo_low.o \
-	obj/JTAG_high.o \
-	obj/NEXUS_high.o \
-	obj/UARTMON_high.o
+bin/%.bin: bin/%.elf
+	@$(OBJCOPY) -O binary $< $@
+bin/%.hex: bin/%.elf
+	@$(OBJCOPY) -O ihex $< $@
 
-SYSOBJS=\
-	obj/startup_stm32f10x_md.o \
-	obj/system_stm32f10x.o \
-	obj/misc.o \
-	obj/stm32f10x_adc.o \
-	obj/stm32f10x_bkp.o \
-	obj/stm32f10x_can.o \
-	obj/stm32f10x_cec.o \
-	obj/stm32f10x_crc.o \
-	obj/stm32f10x_dac.o \
-	obj/stm32f10x_dbgmcu.o \
-	obj/stm32f10x_dma.o \
-	obj/stm32f10x_exti.o \
-	obj/stm32f10x_flash.o \
-	obj/stm32f10x_fsmc.o \
-	obj/stm32f10x_gpio.o \
-	obj/stm32f10x_i2c.o \
-	obj/stm32f10x_iwdg.o \
-	obj/stm32f10x_pwr.o \
-	obj/stm32f10x_rcc.o \
-	obj/stm32f10x_rtc.o \
-	obj/stm32f10x_sdio.o \
-	obj/stm32f10x_spi.o \
-	obj/stm32f10x_tim.o \
-	obj/stm32f10x_usart.o \
-	obj/stm32f10x_wwdg.o
+# Bootloader and app in one, for the first flash over SWD
+bin/bdmtoy-full.hex: bin/bootloader.elf bin/firmware.elf
+	@$(OBJCOPY) -O ihex bin/bootloader.elf obj/boot.hex
+	@$(OBJCOPY) -O ihex bin/firmware.elf obj/app.hex
+	@grep -v -e ':00000001FF' -e '^:04000005' obj/boot.hex > $@
+	@grep -v -e '^:04000005' obj/app.hex >> $@
 
-USBOBJS=\
-	obj/usb_core.o \
-	obj/usb_init.o \
-	obj/usb_int.o \
-	obj/usb_mem.o \
-	obj/usb_regs.o \
-	obj/usb_sil.o \
-	obj/hw_config.o \
-	obj/stm32_it.o \
-	obj/usb_desc.o \
-	obj/usb_istr.o \
-	obj/usb_prop.o \
-	obj/usb_pwr.o
+# Over SWD with an ST-LINK. flash: bootloader and app; flash-app: the app only.
+# CPUTAPID 0: accept the clone STM32s (CKS32, APM32) many Blue Pills carry
+OPENOCD = openocd -f interface/stlink.cfg -c "transport select hla_swd" -c "set CPUTAPID 0" -f target/stm32f1x.cfg
+flash: bin/bdmtoy-full.hex
+	$(OPENOCD) -c init -c halt -c "program bin/bdmtoy-full.hex verify" -c "reset run" -c shutdown
+flash-app: bin/firmware.elf
+	$(OPENOCD) -c init -c halt -c "program bin/firmware.elf verify" -c "reset run" -c shutdown
 
-ALLOBJS=\
-	obj/main.o \
-	obj/SupportFuncs.o \
-	obj/syscalls.o \
-	obj/printf.o \
-	$(SYSOBJS) \
-	$(USBOBJS) \
-	$(TAPOBJS)
+clean:
+	rm -rf obj/app obj/boot obj/*.hex bin/*.elf bin/*.map bin/*.bin bin/*.hex
 
-
-# Interface objects
-obj/TAP_shared.o : TAP/TAP_shared.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/TAP_lowlev.o : TAP/TAP_lowlev.s
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/BDMs_high.o : TAP/BDM_HC12/BDMs_high.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/BDMs_low.o : TAP/BDM_HC12/BDMs_low.s
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/BDMn_high.o : TAP/BDM_NEW/BDMn_high.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/BDMn_low.o : TAP/BDM_NEW/BDMn_low.s
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/BDMo_high.o : TAP/BDM_OLD/BDMo_high.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/BDMo_low.o : TAP/BDM_OLD/BDMo_low.s
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/JTAG_high.o : TAP/JTAG/JTAG_high.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/NEXUS_high.o : TAP/NEXUS/NEXUS_high.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/UARTMON_high.o : TAP/UART_MON/UARTMON_high.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-
-# Misc / main code
-obj/main.o : main.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/SupportFuncs.o : SupportFuncs.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/printf.o : Syssup/stdio/printf.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/syscalls.o : Syssup/syscalls/syscalls.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-
-# System objects
-obj/startup_stm32f10x_md.o : Syssup/CMSIS/Device/ST/STM32F10x/startup_stm32f10x_md.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/system_stm32f10x.o : Syssup/CMSIS/Device/ST/STM32F10x/system_stm32f10x.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-obj/misc.o : Syssup/STM32F10x_StdPeriph_Driver/src/misc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_adc.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_adc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_bkp.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_bkp.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_can.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_can.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_cec.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_cec.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_crc.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_crc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_dac.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_dac.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_dbgmcu.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_dbgmcu.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_dma.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_dma.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_exti.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_exti.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_flash.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_flash.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_fsmc.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_fsmc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_gpio.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_gpio.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_i2c.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_i2c.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_iwdg.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_iwdg.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_pwr.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_pwr.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_rcc.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_rcc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_rtc.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_rtc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_sdio.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_sdio.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_spi.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_spi.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_tim.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_tim.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_usart.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_usart.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32f10x_wwdg.o : Syssup/STM32F10x_StdPeriph_Driver/src/stm32f10x_wwdg.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-# USB objects
-obj/usb_core.o : Syssup/STM32_USB-FS-Device_Driver/src/usb_core.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_init.o : Syssup/STM32_USB-FS-Device_Driver/src/usb_init.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_int.o : Syssup/STM32_USB-FS-Device_Driver/src/usb_int.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_mem.o : Syssup/STM32_USB-FS-Device_Driver/src/usb_mem.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_regs.o : Syssup/STM32_USB-FS-Device_Driver/src/usb_regs.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_sil.o : Syssup/STM32_USB-FS-Device_Driver/src/usb_sil.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-obj/hw_config.o : USB/hw_config.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/stm32_it.o : USB/stm32_it.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_desc.o : USB/usb_desc.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_istr.o : USB/usb_istr.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_prop.o : USB/usb_prop.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-obj/usb_pwr.o : USB/usb_pwr.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-
-firmware : $(ALLOBJS)
-	@$(CC) $(TARGPROC) $(SHAREDC) -Wl,-Map=bin/firmware.map -Wl,--gc-sections -Wl,-Tlink.ld -o bin/firmware.elf $(ALLOBJS)
-	@$(OBJCOPY) -O binary bin/firmware.elf bin/firmware.bin
-	@$(OBJCOPY) -O ihex bin/firmware.elf bin/firmware.hex
-	@$(SIZE) -B bin/firmware.elf
-
-flash :
-	openocd -f "flash.cfg"
-
-startdebug :
-	@$(GDB)
-	openocd -f "debug.cfg"
-
-
-
-clean :
-	@echo Cleaning..
-	@rm -f obj/*.o
-	@rm -f bin/*.elf
-	@rm -f bin/*.bin
-	@rm -f bin/*.hex
+# Header changes rebuild everything: the tree is small
+$(APPOBJ) $(BOOTOBJ): $(wildcard *.h */*.h */*/*.h board/*.h app/*.h bootloader/*.h) makefile
